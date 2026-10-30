@@ -37,6 +37,14 @@ type Restorer struct {
 	SelectFilter func(item string, isDir bool) (selectedForRestore bool, childMayBeSelected bool)
 
 	XattrSelectFilter func(xattrName string) (xattrSelectedForRestore bool)
+
+	// TargetNode, when restoring a subfolder of a snapshot ("ID:subfolder"),
+	// is the subfolder's own node, whose metadata the target directory gets.
+	// Without it the target keeps its own owner, mode, timestamps and
+	// extended attributes: harmless for a scratch directory, but when the
+	// target is the root of a new file system, that root keeps mkfs's
+	// defaults and no SELinux label.
+	TargetNode *data.Node
 }
 
 var restorerAbortOnAllErrors = func(_ string, err error) error { return err }
@@ -501,7 +509,13 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 			}
 
 			if node == nil {
-				return nil
+				// The target itself: it gets the subfolder's metadata
+				// when restoring "ID:subfolder", and is left as it is
+				// for a whole snapshot, which has no node of its own.
+				if res.TargetNode == nil {
+					return nil
+				}
+				return res.restoreNodeMetadataTo(res.TargetNode, target, location)
 			}
 
 			err := res.restoreNodeMetadataTo(node, target, location)

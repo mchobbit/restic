@@ -859,6 +859,55 @@ func TestRestorerConsistentTimestampsAndPermissions(t *testing.T) {
 	}
 }
 
+// Restoring "ID:subfolder" gives the target directory the subfolder's own
+// metadata; restoring without its node leaves the target as it was.
+func TestRestorerTargetNodeMetadata(t *testing.T) {
+	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{
+				Mode:    normalizeFileMode(0750 | os.ModeDir),
+				ModTime: timeForTest,
+				Nodes: map[string]Node{
+					"file": File{Data: "content: file\n"},
+				},
+			},
+		},
+	}, noopGetGenericAttributes)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subtree, dirNode, err := data.FindTreeDirectoryNode(ctx, repo, sn.Tree, "/dir")
+	rtest.OK(t, err)
+	rtest.Assert(t, dirNode != nil && dirNode.Name == "dir", "wrong node for /dir: %v", dirNode)
+	sn.Tree = subtree
+
+	for _, withNode := range []bool{true, false} {
+		target := filepath.Join(rtest.TempDir(t), "target")
+		rtest.OK(t, os.Mkdir(target, 0755))
+		before, err := os.Stat(target)
+		rtest.OK(t, err)
+
+		res := NewRestorer(repo, sn, Options{})
+		if withNode {
+			res.TargetNode = dirNode
+		}
+		_, err = res.RestoreTo(ctx, target)
+		rtest.OK(t, err)
+
+		f, err := os.Stat(target)
+		rtest.OK(t, err)
+		if withNode {
+			checkConsistentInfo(t, "target", f, timeForTest, normalizeFileMode(0750|os.ModeDir))
+		} else {
+			rtest.Equals(t, before.Mode(), f.Mode())
+		}
+		_, err = os.Stat(filepath.Join(target, "file"))
+		rtest.OK(t, err)
+	}
+}
+
 // VerifyFiles must not report cancellation of its context through res.Error.
 func TestVerifyCancel(t *testing.T) {
 	snapshot := Snapshot{

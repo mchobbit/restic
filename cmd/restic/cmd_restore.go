@@ -162,7 +162,8 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		return err
 	}
 
-	sn.Tree, err = data.FindTreeDirectory(ctx, repo, sn.Tree, subfolder)
+	var subfolderNode *data.Node
+	sn.Tree, subfolderNode, err = data.FindTreeDirectoryNode(ctx, repo, sn.Tree, subfolder)
 	if err != nil {
 		return err
 	}
@@ -176,6 +177,7 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		Delete:          opts.Delete,
 		OwnershipByName: opts.OwnershipByName,
 	})
+	res.TargetNode = subfolderNode
 
 	totalErrors := 0
 	res.Error = func(location string, err error) error {

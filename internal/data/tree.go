@@ -289,12 +289,20 @@ func (builder *TreeJSONBuilder) Count() int {
 }
 
 func FindTreeDirectory(ctx context.Context, repo restic.BlobLoader, id *restic.ID, dir string) (*restic.ID, error) {
+	id, _, err := FindTreeDirectoryNode(ctx, repo, id, dir)
+	return id, err
+}
+
+// FindTreeDirectoryNode is FindTreeDirectory that also returns the node of
+// dir, which holds dir's own metadata; it is nil when dir is the tree itself.
+func FindTreeDirectoryNode(ctx context.Context, repo restic.BlobLoader, id *restic.ID, dir string) (*restic.ID, *Node, error) {
 	if id == nil {
-		return nil, errors.New("tree id is null")
+		return nil, nil, errors.New("tree id is null")
 	}
 
 	dirs := strings.Split(path.Clean(dir), "/")
 	subfolder := ""
+	var dirNode *Node
 
 	for _, name := range dirs {
 		if name == "" || name == "." {
@@ -303,26 +311,27 @@ func FindTreeDirectory(ctx context.Context, repo restic.BlobLoader, id *restic.I
 		subfolder = path.Join(subfolder, name)
 		tree, err := LoadTree(ctx, repo, *id)
 		if err != nil {
-			return nil, fmt.Errorf("path %s: %w", subfolder, err)
+			return nil, nil, fmt.Errorf("path %s: %w", subfolder, err)
 		}
 		finder := NewTreeFinder(tree)
 		node, err := finder.Find(name)
 		finder.Close()
 		if err != nil {
-			return nil, fmt.Errorf("path %s: %w", subfolder, err)
+			return nil, nil, fmt.Errorf("path %s: %w", subfolder, err)
 		}
 		if node == nil {
 			if runtime.GOOS == "windows" && strings.Contains(dir, "\\") {
-				return nil, fmt.Errorf("path %s: not found; subfolder syntax currently requires forward slashes; check the output of `restic ls` for valid paths", subfolder)
+				return nil, nil, fmt.Errorf("path %s: not found; subfolder syntax currently requires forward slashes; check the output of `restic ls` for valid paths", subfolder)
 			}
-			return nil, fmt.Errorf("path %s: not found", subfolder)
+			return nil, nil, fmt.Errorf("path %s: not found", subfolder)
 		}
 		if node.Type != NodeTypeDir || node.Subtree == nil {
-			return nil, fmt.Errorf("path %s: not a directory", subfolder)
+			return nil, nil, fmt.Errorf("path %s: not a directory", subfolder)
 		}
 		id = node.Subtree
+		dirNode = node
 	}
-	return id, nil
+	return id, dirNode, nil
 }
 
 type peekableNodeIterator struct {
