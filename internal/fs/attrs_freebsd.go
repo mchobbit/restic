@@ -166,7 +166,7 @@ func setSystemExtattr(path, name string, value []byte) error {
 	return nil
 }
 
-func nodeFillFreeBSDAttributes(node *data.Node, path string, _ *ExtendedFileInfo) error {
+func nodeFillOSAttributes(node *data.Node, path string, _ *ExtendedFileInfo) error {
 	return errors.Join(nodeFillSystemExtattrs(node, path), nodeFillACLs(node, path))
 }
 
@@ -248,8 +248,8 @@ func ignoreUnsupported(path string, err error) error {
 	return err
 }
 
-// nodeRestoreFreeBSDExtattrs restores the system extended attributes.
-func nodeRestoreFreeBSDExtattrs(node *data.Node, path string) error {
+// nodeRestoreOSAttributes restores the system extended attributes.
+func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	var attrs map[string][]byte
 	ok, err := node.GenericAttribute(data.TypeFreeBSDSystemExtattrs, &attrs)
 	if !ok || err != nil {

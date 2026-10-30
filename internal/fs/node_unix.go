@@ -22,17 +22,18 @@ func lchown(name string, node *data.Node, lookupByName bool) error {
 	return os.Lchown(name, int(uid), int(gid))
 }
 
-// nodeRestoreGenericAttributes restores FreeBSD's system extended attributes.
-// The other generic attributes kept on Unix systems are restored later: ACLs
-// after the mode (nodeRestoreACLs), file flags after everything else, by the
-// restorer calling RestoreFileFlags.
+// nodeRestoreGenericAttributes restores the OS's own attributes that go
+// before the mode (FreeBSD's system extended attributes).  The other generic
+// attributes kept on Unix systems are restored later: ACLs after the mode
+// (nodeRestoreACLs), file flags after everything else, by the restorer
+// calling RestoreFileFlags.
 func nodeRestoreGenericAttributes(node *data.Node, path string, warn func(msg string)) error {
-	return errors.Join(nodeRestoreFreeBSDExtattrs(node, path),
+	return errors.Join(nodeRestoreOSAttributes(node, path),
 		data.HandleAllUnknownGenericAttributesFound(node.GenericAttributes, warn))
 }
 
 // nodeFillGenericAttributes records the file's flags, on the systems that
-// keep them, and on FreeBSD its system extended attributes and ACLs.
+// keep them, and its ACLs and other attributes on FreeBSD and illumos.
 func nodeFillGenericAttributes(node *data.Node, path string, fi *ExtendedFileInfo) error {
-	return errors.Join(nodeFillFileFlags(node, path, fi), nodeFillFreeBSDAttributes(node, path, fi))
+	return errors.Join(nodeFillFileFlags(node, path, fi), nodeFillOSAttributes(node, path, fi))
 }

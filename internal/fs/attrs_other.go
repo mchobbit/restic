@@ -1,19 +1,19 @@
-//go:build !freebsd
+//go:build !freebsd && !illumos
 
 package fs
 
 import "github.com/restic/restic/internal/data"
 
-// FreeBSD's system extended attributes and ACLs (attrs_freebsd.go) have no
-// counterpart here.
+// The ACLs and other attributes kept on FreeBSD (attrs_freebsd.go) and
+// illumos (attrs_illumos.go) have no counterpart here.
 
 //nolint:unused // not used on Windows
-func nodeFillFreeBSDAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
+func nodeFillOSAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
 	return nil
 }
 
 //nolint:unused // not used on Windows
-func nodeRestoreFreeBSDExtattrs(_ *data.Node, _ string) error {
+func nodeRestoreOSAttributes(_ *data.Node, _ string) error {
 	return nil
 }
 
