@@ -657,12 +657,14 @@ If there is a **bind-mount** below a directory that is to be saved, restic desce
 archived as a block device file and restored as such. This also means that the content of the
 corresponding disk is not read, at least not from the device file.
 
-By default, restic does not save the access time (atime) for any files or other
-items, since it is not possible to reliably disable updating the access time by
-restic itself. This means that for each new backup a lot of metadata is
-written, and the next backup needs to write new metadata again. If you really
-want to save the access time for files and directories, you can pass the
-``--with-atime`` option to the ``backup`` command.
+This build (BackOtter's) saves the access time (atime) of every file and
+directory by default, so that a restored system gets its atimes back. On Linux
+restic reads files and lists directories with ``O_NOATIME`` where it may (as
+their owner, or as root), so that a backup leaves their access times alone;
+elsewhere reading them updates them as usual, so for each new backup more
+metadata may be written. Pass ``--with-atime=false`` to save the modification
+time in place of the access time, as stock restic does. The ``=`` is needed:
+``--with-atime false`` would back up a path named ``false``.
 
 Backing up full security descriptors on Windows is only possible when the user
 has ``SeBackupPrivilege`` privilege or is running as admin. This is a restriction

@@ -139,7 +139,7 @@ command:
           --tag tags                               add tags for the new snapshot in the format `tag[,tag,...]` (can be specified multiple times) (default [])
           --time time                              time of the backup (ex. '2012-11-01 22:08:41') (default: now)
           --use-fs-snapshot                        use filesystem snapshot where possible (currently only Windows VSS)
-          --with-atime                             store the atime for all files and directories
+          --with-atime                             store the atime for all files and directories (--with-atime=false stores the mtime in its place) (default true)
 
     Global Flags:
           --cacert file                      file to load root certificates from (default: use system certificates or $RESTIC_CACERT)
@@ -283,8 +283,10 @@ Metadata handling
 Restic saves and restores most default attributes, including extended attributes like ACLs.
 Information about holes in a sparse file is not stored explicitly, that is during a backup
 the zero bytes in a hole are deduplicated and compressed like any other data backed up.
-Instead, the restore command optionally creates holes in files by detecting and replacing
-long runs of zeros, in filesystems that support sparse files.
+This build (BackOtter's) only marks a file that had holes (the ``unix.sparse`` generic
+attribute), and the restore command creates holes in such a file by detecting and replacing
+long runs of zeros, as it does in every new file with ``--sparse``, in filesystems that
+support sparse files. Every other file is restored fully allocated.
 
 The following metadata is handled by restic:
 

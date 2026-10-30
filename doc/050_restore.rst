@@ -88,13 +88,18 @@ Restoring full security descriptors on Windows is only possible when the user ha
 privileges or is running as administrator. This is a restriction of Windows, not restic.
 If not all of these privileges are available, only the DACL is restored.
 
-By default, restic does not restore files as sparse. Use ``restore --sparse`` to
-enable the creation of sparse files if supported by the filesystem. Then restic
-will restore long runs of zero bytes as holes in the corresponding files.
-Reading from a hole returns the original zero bytes, but it does not consume
-disk space. Note that the exact location of the holes can differ from those in
-the original file, as their location is determined while restoring and is not
-stored explicitly.
+A file that had holes when it was backed up (this build marks it with the
+``unix.sparse`` generic attribute) is restored as a sparse file again, if it
+goes into a new file: restic leaves each run of zero bytes at the start of
+each of its chunks as a hole. Every other file is fully allocated, zeros and
+all, so that a swap file or a preallocated database file comes back usable; an
+existing file whose contents are right already but that has holes gets them
+filled. Use ``restore --sparse`` to make holes in every new file, if supported
+by the filesystem. A file that exists already is never restored sparse, since
+a hole would leave its old contents in place. Reading from a hole returns the
+original zero bytes, but it does not consume disk space. Note that the exact
+location of the holes can differ from those in the original file, as their
+location is determined while restoring and is not stored explicitly.
 
 Restoring extended file attributes
 ----------------------------------

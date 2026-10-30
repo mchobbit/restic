@@ -23,16 +23,20 @@ new restic release rather than merged.
     `S+v...`), as a mask, read and written through each file's
     `SUNWattr_rw` view.
   - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
+  - `linux.project_id`: a file's project ID (`chattr -p`), when it isn't 0.
+  - `unix.sparse`: `true` on a regular file that had holes.
   A file only gets an attribute when it has something the mode doesn't say
-  (flags, a non-trivial ACL), so trees of ordinary files are byte-for-byte
-  what stock restic writes.
+  (flags, a non-trivial ACL, a project ID, holes), so trees of ordinary
+  files are what stock restic writes, except that atimes are real (see
+  below) and files with holes carry `unix.sparse`; with
+  `--with-atime=false` and no holes, they are byte-for-byte.
 - On restore, ACLs are set after the mode, which rewrites NFSv4 ACLs, and
   flags after everything else (contents, hard links, ownership, xattrs,
   timestamps, mode, ACLs), once per hard-linked file, since an immutable or
   append-only file refuses most of those.  btrfs's no-copy-on-write flag
   goes on while a new file is still empty: btrfs ignores it on one with
   data.  Where the target file system doesn't support a flag, the
-  others are still set and restic reports that one.  Where it doesn't
+  others are still set and restic warns about that one (S10 below).  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
 - A restored symlink keeps its own times on every Unix that can set them
@@ -47,8 +51,130 @@ new restic release rather than merged.
   metadata, as it does everything below it; stock restic leaves the target
   as it was, so a restored file system's root keeps mkfs's mode and has no
   SELinux label.
+- Access times, holes, Linux project IDs and casefolding follow the rules
+  below, which rustic-bko follows too, so that either tool restores the
+  other's snapshots the same way.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
+
+## Rules shared with rustic-bko
+
+rustic-bko's BACKOTTER.md states the same rules, in the same words where it
+can.  S1 to S11 are their numbers in BackOtter's plan.
+
+- **S1 Access times.**  Backup stores each file's and directory's real atime
+  by default; `--with-atime=false` stores the mtime in its place, as stock
+  restic does (the `=` is needed: `--with-atime false` backs up a path named
+  "false").  rustic-bko's switch is `--set-atime mtime`.  Neither tool
+  changes the source's atimes where it can help it: on Linux every file
+  opened for reading and every directory opened for listing gets
+  `O_NOATIME`, retried without it on `EPERM` (neither its owner nor root).
+  Other systems have no `O_NOATIME`, and there both tools update atimes the
+  same way.  `rewrite` keeps the stored atimes.  `restore --verify` reads
+  the restored files with `O_NOATIME`, so it doesn't undo their atimes.
+- **S2 Ownership.**  Restore gives files their numeric uid and gid by
+  default.  `--ownership-by-name` (rustic-bko: `--by-name`, or its alias
+  `--ownership-by-name`) gives them the IDs their user and group names have
+  on the target instead; a name that is empty or unknown there falls back
+  to the saved ID, never to 0.
+- **S3 Which files are sparse.**  A regular file whose lstat gives `size`
+  and `blocks`:
+  1. is not sparse if `size <= 0` or `blocks*512 >= size` (this covers
+     preallocated files and swap files);
+  2. is sparse if the OS has no SEEK_HOLE probe: the blocks decide.  Both
+     tools probe on Linux (and Android), FreeBSD, macOS and illumos, and not
+     on OpenBSD, NetBSD, DragonFly, Solaris or anything else.  DragonFly has
+     SEEK_HOLE, but HAMMER2 answers `EOPNOTSUPP`, and tmpfs always the file's
+     size, which would miss real holes;
+  3. otherwise is sparse if `lseek(fd, 0, SEEK_HOLE)` finds a hole before
+     `size`.  If the probe fails with `EINVAL`, `ENOTSUP`/`EOPNOTSUPP` or
+     `ENOTTY` (the file system can't answer), the blocks decide: sparse.  Any
+     other error (a failed open, `ENXIO`, `EACCES`, ...) means not sparse;
+  4. on Linux the probe uses the descriptor opened for the inode flags and
+     project ID, so each file is opened once; if that open fails, the file
+     is not sparse.  Elsewhere the probe opens the file with
+     `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC`.  The decision always
+     uses the lstat's size and blocks.
+
+  A sparse file gets `"unix.sparse": true`.  On restore, `false`, no
+  attribute or a malformed one (S9) means "not marked".
+
+  On ZFS, SEEK_HOLE waits for a file with unwritten changes to be synced
+  (a transaction group, up to a few seconds) before answering.  Both tools
+  probe the same files, so both pay that for files being written during
+  the backup; skipping such files, or taking the mark from the parent
+  snapshot, would make the result depend on timing.
+- **S4 Sparse restore.**  A file is restored sparse if and only if it is
+  marked `unix.sparse` or `--sparse` was given (rustic-bko: `--sparse
+  by-content`; neither tool has a way to force a marked file dense), and it
+  goes into a new, empty file: nothing was at its target path when the
+  restore queued it, or something other than a regular file, which restic
+  always replaces with a new file.  A file restored sparse is sized with
+  `ftruncate`, without preallocation, and of each of its chunks the longest
+  run of zeros at the start is left as a hole (a chunk of zeros is not
+  written at all), the rest written.  Should such a file turn out to have
+  data when it is opened (a race), it is truncated to 0 first, so that no
+  hole sits over old bytes.
+- **S5 Dense restore.**  Every other file is fully allocated.  A new file is
+  preallocated to its full length when it is first sized, where the OS can
+  (Linux `fallocate(fd, 0, 0, size)`, macOS `F_PREALLOCATE`; elsewhere
+  nothing), and then every byte, zero chunks included, is written.  An
+  existing file that is written into is truncated if it is longer, then
+  preallocated the same way.  An existing file left as it is, because its
+  contents are right, is preallocated on Linux and macOS if it is not
+  restored sparse by S4's first condition and has holes (`blocks*512 <
+  size`): that fills the holes of a swap file left by an interrupted
+  restore.  Not with `--dry-run`.  Preallocation errors are only logged.
+- **S6 Casefolding (`FS_CASEFOLD_FL`, chattr's F) is set at creation.**  On
+  Linux, every directory the restore creates, and every existing one that is
+  still empty when the restore reaches it, gets its F made to match its
+  node's before anything goes in: set when the node has it, cleared (an F
+  inherited from the parent) when it doesn't.  That takes one open and
+  `FS_IOC_GETFLAGS`, and `FS_IOC_SETFLAGS` only when F differs; a file system
+  without inode flags or casefolding is left alone, silently.  This covers
+  the target of `ID:subfolder` (its node is the subfolder's) and the
+  unselected parents of `--include`d entries, which are created with their
+  nodes' F.  A whole-snapshot restore's target, which has no node, is left
+  as it is.  The late flag pass (S7) never touches F: if a directory's F
+  still differs from its node's at the end (it had entries, or the file
+  system can't casefold), restic warns "casefolding (F) not restored on
+  PATH: directory not empty or not supported", once per directory.  That is
+  a warning, not an error.
+- **S7 Late inode flags on Linux.**  After everything else, each file's kept
+  flags but F are set to its node's, keeping the file system's own flags and
+  F as they are; when that changes nothing, there is no `FS_IOC_SETFLAGS`
+  call at all.  On btrfs every `FS_IOC_SETFLAGS` rewrites the
+  `btrfs.compression` property (zstd and lzo become zlib, and "no" goes), so
+  for a file with a `btrfs.compression` extended attribute that the restore
+  sets: the flags but immutable and append-only are set first, then the
+  attribute again, then immutable and append-only through
+  `FS_IOC_FSSETXATTR`, which leaves the property alone (checked on Linux
+  6.12).
+- **S8 Project IDs (`linux.project_id`).**  Backup reads the project ID
+  through the descriptor opened for the flags, and stores it only when it
+  isn't 0.  Restore sets it before the inode flags (an immutable file refuses
+  a new one), and not when it is equal already; an explicit 0 does nothing.
+  Symlinks, FIFOs, sockets and devices get no project ID either way: they
+  can't be opened for `FS_IOC_FSGETXATTR` without following them or side
+  effects (Linux 6.17's `file_getattr(2)` could, but is too new to rely on).
+- **S9 Malformed values.**  A value of `linux.inode_flags`,
+  `linux.project_id`, `unix.sparse` or a `*.file_flags` attribute that can't
+  be decoded gets one warning per attribute per restore, and is ignored.  It
+  is not an error.
+- **S10 Unsupported versus failed.**  When the target file system refuses an
+  inode flag, file flag, F or project ID with `ENOTTY`,
+  `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), restic warns once per
+  attribute and refused bits, naming the first file, and gives the number
+  of files at the end; the restore still exits 0.  On FreeBSD, OpenBSD and
+  illumos the same goes for their file flags.  Any other failure (`EPERM`,
+  `EDQUOT`, `EIO`, ...) is an error, and restic exits 1, while rustic-bko
+  only warns about it and exits 0 (upstream rustic's design).  That is the
+  one exit-status difference left between the tools.
+- **S11 Opening files for metadata.**  Regular files and directories are
+  opened with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC` (and
+  `O_DIRECTORY` for directories) and checked with `fstat`: a file of another
+  type than its node's gets no ioctls, nor, at backup, one that isn't the
+  inode the lstat saw.
 
 ## Building
 
