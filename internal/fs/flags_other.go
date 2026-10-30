@@ -1,4 +1,4 @@
-//go:build !freebsd && !linux && !illumos
+//go:build !freebsd && !linux && !illumos && !openbsd
 
 package fs
 

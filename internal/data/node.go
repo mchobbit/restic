@@ -65,6 +65,8 @@ const (
 	TypeIllumosACL GenericAttributeType = "illumos.acl"
 	// TypeIllumosSystemAttributes is the GenericAttributeType used for storing an illumos file's system attributes (immutable, appendonly, nounlink, nodump, hidden, ...; chmod(1)'s S+v), as a bitmask.
 	TypeIllumosSystemAttributes GenericAttributeType = "illumos.system_attributes"
+	// TypeOpenBSDFileFlags is the GenericAttributeType used for storing an OpenBSD file's flags (st_flags, as chflags(2) sets them).
+	TypeOpenBSDFileFlags GenericAttributeType = "openbsd.file_flags"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -73,6 +75,7 @@ func init() {
 	storeGenericAttributeType(TypeFreeBSDFileFlags, TypeLinuxInodeFlags)
 	storeGenericAttributeType(TypeFreeBSDSystemExtattrs, TypeFreeBSDACLAccess, TypeFreeBSDACLDefault, TypeFreeBSDACLNFS4)
 	storeGenericAttributeType(TypeIllumosACL, TypeIllumosSystemAttributes)
+	storeGenericAttributeType(TypeOpenBSDFileFlags)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

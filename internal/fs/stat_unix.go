@@ -29,6 +29,8 @@ func extendedStat(fi os.FileInfo) *ExtendedFileInfo {
 		AccessTime: time.Unix(s.Atim.Unix()),
 		ModTime:    time.Unix(s.Mtim.Unix()),
 		ChangeTime: time.Unix(s.Ctim.Unix()),
+
+		sys: s,
 	}
 }
 
