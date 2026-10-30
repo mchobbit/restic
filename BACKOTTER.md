@@ -18,19 +18,31 @@ new restic release rather than merged.
   - `freebsd.acl_nfs4`: NFSv4 ACLs (ZFS, UFS mounted `nfsv4acls`).
   - `freebsd.system_extattrs`: extended attributes in the system namespace
     (restic itself keeps only the user namespace on FreeBSD).
+  - `illumos.acl`: ZFS's ACLs on illumos (NFSv4-style ACEs).
+  - `illumos.system_attributes`: illumos' system attributes (`chmod(1)`'s
+    `S+v...`), as a mask, read and written through each file's
+    `SUNWattr_rw` view.
+  - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
   A file only gets an attribute when it has something the mode doesn't say
   (flags, a non-trivial ACL), so trees of ordinary files are byte-for-byte
   what stock restic writes.
 - On restore, ACLs are set after the mode, which rewrites NFSv4 ACLs, and
   flags after everything else (contents, hard links, ownership, xattrs,
-  timestamps, mode, ACLs), since an immutable or append-only file refuses
-  most of those.  Where the target file system doesn't support a flag, the
+  timestamps, mode, ACLs), once per hard-linked file, since an immutable or
+  append-only file refuses most of those.  btrfs's no-copy-on-write flag
+  goes on while a new file is still empty: btrfs ignores it on one with
+  data.  Where the target file system doesn't support a flag, the
   others are still set and restic reports that one.  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
-- On FreeBSD a restored symlink keeps its own times (`utimensat(2)` with
-  `AT_SYMLINK_NOFOLLOW`, as on Linux) and permissions (`lchmod(2)`); stock
-  restic gives it the time of the restore and 0755.
+- A restored symlink keeps its own times on every Unix that can set them
+  (`utimensat(2)` with `AT_SYMLINK_NOFOLLOW`, as on Linux), and on FreeBSD its
+  permissions (`lchmod(2)`); stock restic gives it the time of the restore
+  and 0755.
+- On illumos, extended attributes (named attribute files, `runat(1)`) are
+  backed up and restored, through `openat(2)` with `O_XATTR`: stock restic's
+  calls for them fail there with ENOTSUP, which it ignores.  The system
+  attribute views `SUNWattr_ro` and `SUNWattr_rw` are left out.
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
   metadata, as it does everything below it; stock restic leaves the target
   as it was, so a restored file system's root keeps mkfs's mode and has no
