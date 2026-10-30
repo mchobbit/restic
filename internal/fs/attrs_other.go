@@ -20,3 +20,8 @@ func nodeRestoreFreeBSDExtattrs(_ *data.Node, _ string) error {
 func nodeRestoreACLs(_ *data.Node, _ string) error {
 	return nil
 }
+
+// A symlink's own permissions don't matter elsewhere (Linux has none).
+func nodeRestoreSymlinkMode(_ *data.Node, _ string) error {
+	return nil
+}

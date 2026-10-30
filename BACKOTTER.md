@@ -28,6 +28,9 @@ new restic release rather than merged.
   others are still set and restic reports that one.  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
+- On FreeBSD a restored symlink keeps its own times (`utimensat(2)` with
+  `AT_SYMLINK_NOFOLLOW`, as on Linux) and permissions (`lchmod(2)`); stock
+  restic gives it the time of the restore and 0755.
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
   metadata, as it does everything below it; stock restic leaves the target
   as it was, so a restored file system's root keeps mkfs's mode and has no

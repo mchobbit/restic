@@ -21,22 +21,36 @@ const (
 	sfSnapshot = 0x00200000 // a UFS snapshot file
 )
 
-// freebsdFileFlags are the flags kept.  ZFS sets UF_ARCHIVE on every file it
-// writes (as Windows does its archive bit), so keeping it would give nearly
-// every file an attribute, and a restore onto ZFS sets it again anyway.
-// SF_SNAPSHOT can't be set.
-const freebsdFileFlags = (ufSettable | sfSettable) &^ (ufArchive | sfSnapshot)
+// freebsdFileFlags are the flags kept: all that an owner or root can set,
+// which leaves out SF_SNAPSHOT.
+const freebsdFileFlags = (ufSettable | sfSettable) &^ sfSnapshot
 
 func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
-	if s, ok := fi.sys.(*syscall.Stat_t); ok {
-		node.SetFileFlags(fileFlagsAttribute, s.Flags&freebsdFileFlags)
+	s, ok := fi.sys.(*syscall.Stat_t)
+	if !ok {
+		return nil
 	}
+	flags := s.Flags & freebsdFileFlags
+	// ZFS sets UF_ARCHIVE on every file it writes, as Windows does its
+	// archive bit.  On its own it would give nearly every file an attribute,
+	// and a restore onto ZFS sets it again anyway, so it's kept only along
+	// with other flags, which are set exactly as they were.
+	if flags&^ufArchive == 0 {
+		return nil
+	}
+	node.SetFileFlags(fileFlagsAttribute, flags)
 	return nil
 }
 
 func restoreFileFlags(path string, _ data.NodeType, flags uint32) error {
+	// Leave the flags that aren't kept as the file has them.
+	var st unix.Stat_t
+	if err := unix.Lstat(path, &st); err != nil {
+		return &os.PathError{Op: "lstat", Path: path, Err: err}
+	}
+	own := st.Flags &^ freebsdFileFlags
 	return setFlagsBestEffort(flags&freebsdFileFlags, func(f uint32) error {
-		return lchflags(path, f)
+		return lchflags(path, own|f)
 	})
 }
 

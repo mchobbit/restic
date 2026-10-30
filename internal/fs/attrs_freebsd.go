@@ -262,6 +262,17 @@ func nodeRestoreFreeBSDExtattrs(node *data.Node, path string) error {
 	return errors.Join(errs...)
 }
 
+// nodeRestoreSymlinkMode gives a symlink its own permissions back: FreeBSD
+// keeps them (lchmod(2)), and ls(1) and mtree(8) show them, though access
+// doesn't depend on them.  Without this a restored symlink gets 0755.
+func nodeRestoreSymlinkMode(node *data.Node, path string) error {
+	err := unix.Fchmodat(unix.AT_FDCWD, path, uint32(node.Mode.Perm()), unix.AT_SYMLINK_NOFOLLOW)
+	if err != nil {
+		return &os.PathError{Op: "lchmod", Path: path, Err: err}
+	}
+	return nil
+}
+
 // nodeRestoreACLs restores the ACLs.  It runs after the mode is set: chmod(2)
 // rewrites an NFSv4 ACL (ZFS discards it), and setting an ACL sets the
 // mode's permission bits from its entries.

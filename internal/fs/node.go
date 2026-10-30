@@ -347,6 +347,11 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 				firsterr = errors.WithStack(err)
 			}
 		}
+	} else if err := nodeRestoreSymlinkMode(node, path); err != nil {
+		debug.Log("error restoring the mode of symlink %v: %v", path, err)
+		if firsterr == nil {
+			firsterr = err
+		}
 	}
 
 	// After the mode: chmod rewrites an NFSv4 ACL, and setting an ACL sets
