@@ -48,11 +48,17 @@ const (
 	TypeSecurityDescriptor GenericAttributeType = "windows.security_descriptor"
 
 	// Generic Attributes for other OS types should be defined here.
+
+	// TypeFreeBSDFileFlags is the GenericAttributeType used for storing a FreeBSD file's flags (st_flags, as chflags(2) sets them).
+	TypeFreeBSDFileFlags GenericAttributeType = "freebsd.file_flags"
+	// TypeLinuxInodeFlags is the GenericAttributeType used for storing a Linux file's inode flags (FS_IOC_GETFLAGS, as chattr(1) sets them).
+	TypeLinuxInodeFlags GenericAttributeType = "linux.inode_flags"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
 func init() {
 	storeGenericAttributeType(TypeCreationTime, TypeFileAttributes, TypeSecurityDescriptor)
+	storeGenericAttributeType(TypeFreeBSDFileFlags, TypeLinuxInodeFlags)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

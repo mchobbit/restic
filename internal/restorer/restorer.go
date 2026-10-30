@@ -26,6 +26,8 @@ type Restorer struct {
 	opts Options
 
 	fileList map[string]bool
+	// fileFlags are the files to set file flags on, last; see RestoreTo.
+	fileFlags []fileFlags
 
 	Error func(location string, err error) error
 	Warn  func(message string)
@@ -301,7 +303,35 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	if err != nil {
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 	}
+	if flags, ok := fs.NodeFileFlags(node); ok {
+		res.fileFlags = append(res.fileFlags, fileFlags{target, location, node.Type, flags})
+	}
 	return err
+}
+
+// fileFlags is a file whose file flags the restorer sets once it has
+// finished with every file.
+type fileFlags struct {
+	target, location string
+	typ              data.NodeType
+	flags            uint32
+}
+
+// restoreFileFlags sets the file flags noted while restoring metadata.  They
+// come last: an immutable file refuses new hard links, timestamps and
+// permissions, an immutable directory new entries, and an append-only file
+// its contents.
+func (res *Restorer) restoreFileFlags() error {
+	for _, f := range res.fileFlags {
+		debug.Log("restoreFileFlags %v %#x", f.target, f.flags)
+		if err := fs.RestoreFileFlags(f.target, f.typ, f.flags); err != nil {
+			if err := res.sanitizeError(f.location, err); err != nil {
+				return err
+			}
+		}
+	}
+	res.fileFlags = nil
+	return nil
 }
 
 func (res *Restorer) restoreHardlinkAt(node *data.Node, target, path, location string) error {
@@ -481,7 +511,10 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 			return err
 		},
 	})
-	return restoredFileCount, err
+	if err != nil {
+		return restoredFileCount, err
+	}
+	return restoredFileCount, res.restoreFileFlags()
 }
 
 func (res *Restorer) removeUnexpectedFiles(ctx context.Context, target, location string, expectedFilenames []string) error {

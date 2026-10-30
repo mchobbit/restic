@@ -21,12 +21,15 @@ func lchown(name string, node *data.Node, lookupByName bool) error {
 	return os.Lchown(name, int(uid), int(gid))
 }
 
-// nodeRestoreGenericAttributes is no-op.
+// nodeRestoreGenericAttributes is no-op.  File flags, the one generic
+// attribute kept on some Unix systems, are restored later, by the restorer
+// calling RestoreFileFlags.
 func nodeRestoreGenericAttributes(node *data.Node, _ string, warn func(msg string)) error {
 	return data.HandleAllUnknownGenericAttributesFound(node.GenericAttributes, warn)
 }
 
-// nodeFillGenericAttributes is a no-op.
-func nodeFillGenericAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
-	return nil
+// nodeFillGenericAttributes records the file's flags, on the systems that
+// keep them.
+func nodeFillGenericAttributes(node *data.Node, path string, fi *ExtendedFileInfo) error {
+	return nodeFillFileFlags(node, path, fi)
 }
