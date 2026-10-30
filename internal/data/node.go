@@ -71,6 +71,8 @@ const (
 	TypeLinuxProjectID GenericAttributeType = "linux.project_id"
 	// TypeUnixSparse is the GenericAttributeType used for marking a regular file that had holes (true), which a restore writes sparse again.
 	TypeUnixSparse GenericAttributeType = "unix.sparse"
+	// TypeHaikuAttributes is the GenericAttributeType rustic-bko uses for a Haiku file's typed attributes. restic doesn't run on Haiku; it only knows the name, so restoring such a snapshot elsewhere skips it quietly.
+	TypeHaikuAttributes GenericAttributeType = "haiku.attributes"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -81,6 +83,7 @@ func init() {
 	storeGenericAttributeType(TypeIllumosACL, TypeIllumosSystemAttributes)
 	storeGenericAttributeType(TypeOpenBSDFileFlags)
 	storeGenericAttributeType(TypeLinuxProjectID, TypeUnixSparse)
+	storeGenericAttributeType(TypeHaikuAttributes)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType
