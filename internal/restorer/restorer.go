@@ -466,6 +466,16 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				} else {
 					res.opts.Progress.AddFile(node.Size)
 					if !res.opts.DryRun {
+						// Flags a file system only takes on an empty
+						// file (btrfs's no-copy-on-write) go on now,
+						// before the file restorer writes its data.
+						if flags, ok := fs.NodeFileFlags(node); ok {
+							if err := fs.PrepareFileForFlags(target, flags); err != nil {
+								if err := res.sanitizeError(location, err); err != nil {
+									return err
+								}
+							}
+						}
 						filerestorer.addFile(location, node.Content, int64(node.Size), matches)
 					} else {
 						action := restoreui.ActionFileUpdated

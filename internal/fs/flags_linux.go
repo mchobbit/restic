@@ -7,6 +7,7 @@ import (
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
+	"github.com/restic/restic/internal/errors"
 	"golang.org/x/sys/unix"
 )
 
@@ -91,4 +92,39 @@ func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
 		return &os.PathError{Op: "FS_IOC_SETFLAGS", Path: path, Err: err}
 	}
 	return nil
+}
+
+// flagsBeforeData are the flags a file system only takes while a file is
+// empty: btrfs ignores FS_NOCOW_FL on a file with data, without an error.
+const flagsBeforeData = 0x00800000 // FS_NOCOW_FL
+
+func prepareFileForFlags(path string, flags uint32) error {
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if errors.Is(err, unix.EEXIST) {
+		return nil // the restorer decides what to do with an existing file
+	}
+	if err != nil {
+		return &os.PathError{Op: "create", Path: path, Err: err}
+	}
+	defer func() { _ = unix.Close(fd) }()
+	current, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS)
+	if err != nil {
+		if unsupportedFlags(err) {
+			return nil // no inode flags here; restoreFileFlags reports it
+		}
+		return &os.PathError{Op: "FS_IOC_GETFLAGS", Path: path, Err: err}
+	}
+	if err := unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, int(current|flags)); err != nil {
+		if unsupportedFlags(err) {
+			return nil
+		}
+		return &os.PathError{Op: "FS_IOC_SETFLAGS", Path: path, Err: err}
+	}
+	return nil
+}
+
+// unsupportedFlags tells the errors of a file system without the flags
+// (ext4 and XFS have no no-copy-on-write), which restoreFileFlags reports.
+func unsupportedFlags(err error) bool {
+	return errors.Is(err, unix.ENOTTY) || errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL)
 }

@@ -27,6 +27,17 @@ func NodeFileFlags(node *data.Node) (uint32, bool) {
 	return flags, ok
 }
 
+// PrepareFileForFlags creates an empty file at path with those of flags that
+// a file system only takes while a file is empty (btrfs's no-copy-on-write),
+// for the restorer to write the contents into.  It does nothing when there
+// are none, or when path exists already.
+func PrepareFileForFlags(path string, flags uint32) error {
+	if flags&flagsBeforeData == 0 {
+		return nil
+	}
+	return prepareFileForFlags(path, flags&flagsBeforeData)
+}
+
 // RestoreFileFlags sets the file flags of the file at path, which has type
 // typ, to flags.  Flags the file system doesn't support are left out, and
 // reported in the error.
