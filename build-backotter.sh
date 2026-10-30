@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Build BackOtter's restic for each GOOS/GOARCH given (default: linux/amd64
-# and freebsd/amd64) into dist/.  See BACKOTTER.md.
+# Build BackOtter's restic for each GOOS/GOARCH given (default: linux/amd64,
+# freebsd/amd64, netbsd/amd64 and dragonfly/amd64) into dist/.  See
+# BACKOTTER.md.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 targets=("$@")
-[[ ${#targets[@]} -gt 0 ]] || targets=(linux/amd64 freebsd/amd64)
+[[ ${#targets[@]} -gt 0 ]] || targets=(linux/amd64 freebsd/amd64 netbsd/amd64 dragonfly/amd64)
 version=$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/global/global.go)
 [[ $version == *+backotter.* ]] || { echo "build-backotter: Version is '$version', not X.Y.Z+backotter.N" >&2; exit 1; }
 

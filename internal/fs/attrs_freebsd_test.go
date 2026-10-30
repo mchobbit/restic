@@ -4,12 +4,14 @@ package fs
 
 import (
 	"testing"
-	"unsafe"
 
 	rtest "github.com/restic/restic/internal/test"
+	"golang.org/x/sys/unix"
 )
 
-// The kernel copies exactly sizeof(struct acl) bytes in and out.
-func TestRawACLSize(t *testing.T) {
-	rtest.Equals(t, uintptr(8+4*4+aclMaxEntries*16), unsafe.Sizeof(rawACL{}))
+// freebsdACLs spells out the numbers x/sys/unix has for FreeBSD.
+func TestFreeBSDACLSyscalls(t *testing.T) {
+	rtest.Equals(t, uintptr(unix.SYS___ACL_GET_LINK), osACLs.sysACLGetLink)
+	rtest.Equals(t, uintptr(unix.SYS___ACL_SET_LINK), osACLs.sysACLSetLink)
+	rtest.Equals(t, uintptr(unix.SYS_LPATHCONF), osACLs.sysLpathconf)
 }

@@ -23,6 +23,18 @@ new restic release rather than merged.
     `S+v...`), as a mask, read and written through each file's
     `SUNWattr_rw` view.
   - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
+  - `netbsd.file_flags`: NetBSD's `chflags(1)` flags, but those the kernel
+    manages (`SF_SNAPSHOT`, `SF_SNAPINVAL`, and `SF_LOG`, which marks the
+    log's inode: `chflags(2)` takes it, so it must not come back).
+  - `netbsd.acl_access`, `netbsd.acl_default`, `netbsd.acl_nfs4`,
+    `netbsd.system_extattrs`: as the FreeBSD ones, in the same form, read
+    and set by the same code (NetBSD has FreeBSD's ACL interface under
+    other system call numbers and `pathconf` names), and on symlinks too.
+    They exist only on FFSv2ea (`newfs -O 2ea`, mounted `posix1eacls` or
+    `nfs4acls`); plain FFSv2 has neither ACLs nor extended attributes.
+  - `dragonfly.file_flags`: DragonFly's `chflags(1)` flags, all of them
+    (`noscache`, `nohistory` and the rest; DragonFly has no ACLs or
+    extended attributes).
   - `linux.project_id`: a file's project ID (`chattr -p`), when it isn't 0.
   - `unix.sparse`: `true` on a regular file that had holes.
   A file only gets an attribute when it has something the mode doesn't say
@@ -40,9 +52,10 @@ new restic release rather than merged.
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
 - A restored symlink keeps its own times on every Unix that can set them
-  (`utimensat(2)` with `AT_SYMLINK_NOFOLLOW`, as on Linux), and on FreeBSD its
-  permissions (`lchmod(2)`); stock restic gives it the time of the restore
-  and 0755.
+  (`utimensat(2)` with `AT_SYMLINK_NOFOLLOW`, as on Linux), and on FreeBSD,
+  OpenBSD, NetBSD and DragonFly its permissions (`fchmodat(2)` with
+  `AT_SYMLINK_NOFOLLOW`; a file system that refuses that is left alone);
+  stock restic gives it the time of the restore and 0755.
 - On illumos, extended attributes (named attribute files, `runat(1)`) are
   backed up and restored, through `openat(2)` with `O_XATTR`: stock restic's
   calls for them fail there with ENOTSUP, which it ignores.  The system
@@ -165,11 +178,12 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   inode flag, file flag, F or project ID with `ENOTTY`,
   `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), restic warns once per
   attribute and refused bits, naming the first file, and gives the number
-  of files at the end; the restore still exits 0.  On FreeBSD, OpenBSD and
-  illumos the same goes for their file flags.  Any other failure (`EPERM`,
-  `EDQUOT`, `EIO`, ...) is an error, and restic exits 1, while rustic-bko
-  only warns about it and exits 0 (upstream rustic's design).  That is the
-  one exit-status difference left between the tools.
+  of files at the end; the restore still exits 0.  On FreeBSD, OpenBSD,
+  NetBSD, DragonFly and illumos the same goes for their file flags.  Any
+  other failure (`EPERM`, `EDQUOT`, `EIO`, ...) is an error, and restic
+  exits 1, while rustic-bko only warns about it and exits 0 (upstream
+  rustic's design).  That is the one exit-status difference left between
+  the tools.
 - **S11 Opening files for metadata.**  Regular files and directories are
   opened with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC` (and
   `O_DIRECTORY` for directories) and checked with `fstat`: a file of another
@@ -178,7 +192,8 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
 
 ## Building
 
-    ./build-backotter.sh [GOOS/GOARCH ...]     # default: linux/amd64 freebsd/amd64
+    ./build-backotter.sh [GOOS/GOARCH ...]
+    # default: linux/amd64 freebsd/amd64 netbsd/amd64 dragonfly/amd64
 
 Builds without the `selfupdate` tag, so there is no `self-update` command to
 replace this build with stock restic.  Binaries go to `dist/`, named

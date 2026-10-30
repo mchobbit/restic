@@ -1,14 +1,22 @@
 package fs
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/restic/restic/internal/data"
+)
 
 // FreeBSD ACLs as <sys/acl.h> has them, and the part of FreeBSD's ACL code
 // (sys/kern/subr_acl_nfs4.c) that tells a trivial NFSv4 ACL, one that says no
-// more than the file's mode, from one worth keeping.  Plain Go, so that it is
-// tested on any OS; the system calls are in attrs_freebsd.go.
+// more than the file's mode, from one worth keeping.  NetBSD has the same
+// ACLs, struct acl and system calls, under other numbers.  Plain Go, so that
+// it is tested on any OS; the system calls are in attrs_bsd.go.
 
 const (
 	aclMaxEntries  = 254        // ACL_MAX_ENTRIES
+	aclTypeAccess  = 2          // ACL_TYPE_ACCESS
+	aclTypeDefault = 3          // ACL_TYPE_DEFAULT
+	aclTypeNFS4    = 4          // ACL_TYPE_NFS4
 	aclUndefinedID = 0xffffffff // ACL_UNDEFINED_ID
 
 	// ae_tag
@@ -53,6 +61,70 @@ type aclEntry struct {
 	Perm  uint32 `json:"perm"`
 	Type  uint16 `json:"type,omitempty"`
 	Flags uint16 `json:"flags,omitempty"`
+}
+
+// bsdACLSystem is what differs between the systems with FreeBSD's ACLs and
+// extended attributes: the numbers of the system calls x/sys/unix doesn't
+// have for all of them, the pathconf(2) names, whether a symlink has ACLs of
+// its own, and the generic attributes they are kept in.  The JSON is the
+// same.
+type bsdACLSystem struct {
+	sysACLGetLink, sysACLSetLink, sysLpathconf uintptr // <sys/syscall.h>
+	pcACLExtended, pcACLNFS4                   int     // <sys/unistd.h>
+	symlinkACLs                                bool
+
+	systemExtattrs, aclAccess, aclDefault, aclNFS4 data.GenericAttributeType
+}
+
+var freebsdACLs = bsdACLSystem{
+	sysACLGetLink: 425, sysACLSetLink: 426, sysLpathconf: 513,
+	pcACLExtended: 59, pcACLNFS4: 64,
+	systemExtattrs: data.TypeFreeBSDSystemExtattrs,
+	aclAccess:      data.TypeFreeBSDACLAccess,
+	aclDefault:     data.TypeFreeBSDACLDefault,
+	aclNFS4:        data.TypeFreeBSDACLNFS4,
+}
+
+var netbsdACLs = bsdACLSystem{
+	sysACLGetLink: 487, sysACLSetLink: 488, sysLpathconf: 499,
+	pcACLExtended: 14, pcACLNFS4: 17,
+	symlinkACLs:    true, // setfacl -h works on FFSv2ea
+	systemExtattrs: data.TypeNetBSDSystemExtattrs,
+	aclAccess:      data.TypeNetBSDACLAccess,
+	aclDefault:     data.TypeNetBSDACLDefault,
+	aclNFS4:        data.TypeNetBSDACLNFS4,
+}
+
+// fillACLs keeps those of a file's ACLs that say more than its mode in
+// node's generic attributes: its NFSv4 ACL if nfs4 says the file system has
+// those, else its POSIX.1e access ACL and a directory's default ACL.  get
+// reads the file's ACL of a type; its errors are returned as they are.
+func (sys *bsdACLSystem) fillACLs(node *data.Node, nfs4 bool, get func(typ int) ([]aclEntry, error)) error {
+	if nfs4 {
+		acl, err := get(aclTypeNFS4)
+		if err != nil || nfs4IsTrivial(acl) {
+			return err
+		}
+		return node.SetGenericAttribute(sys.aclNFS4, acl)
+	}
+	acl, err := get(aclTypeAccess)
+	if err != nil {
+		return err
+	}
+	// Three entries are just the mode: user_obj, group_obj and other.
+	if len(acl) > 3 {
+		if err := node.SetGenericAttribute(sys.aclAccess, acl); err != nil {
+			return err
+		}
+	}
+	if node.Type != data.NodeTypeDir {
+		return nil
+	}
+	acl, err = get(aclTypeDefault)
+	if err != nil || len(acl) == 0 {
+		return err
+	}
+	return node.SetGenericAttribute(sys.aclDefault, acl)
 }
 
 // nfs4ModeFromACL is acl_nfs4_sync_mode_from_acl(): the permission bits of a

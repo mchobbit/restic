@@ -73,6 +73,18 @@ const (
 	TypeUnixSparse GenericAttributeType = "unix.sparse"
 	// TypeHaikuAttributes is the GenericAttributeType rustic-bko uses for a Haiku file's typed attributes. restic doesn't run on Haiku; it only knows the name, so restoring such a snapshot elsewhere skips it quietly.
 	TypeHaikuAttributes GenericAttributeType = "haiku.attributes"
+	// TypeNetBSDFileFlags is the GenericAttributeType used for storing a NetBSD file's flags (st_flags, as chflags(2) sets them), but those the kernel manages.
+	TypeNetBSDFileFlags GenericAttributeType = "netbsd.file_flags"
+	// TypeNetBSDSystemExtattrs is the GenericAttributeType used for storing a NetBSD file's extended attributes in the system namespace, as TypeFreeBSDSystemExtattrs.
+	TypeNetBSDSystemExtattrs GenericAttributeType = "netbsd.system_extattrs"
+	// TypeNetBSDACLAccess is the GenericAttributeType used for storing a NetBSD file's POSIX.1e access ACL, as TypeFreeBSDACLAccess.
+	TypeNetBSDACLAccess GenericAttributeType = "netbsd.acl_access"
+	// TypeNetBSDACLDefault is the GenericAttributeType used for storing a NetBSD directory's POSIX.1e default ACL, as TypeFreeBSDACLDefault.
+	TypeNetBSDACLDefault GenericAttributeType = "netbsd.acl_default"
+	// TypeNetBSDACLNFS4 is the GenericAttributeType used for storing a NetBSD file's NFSv4 ACL, as TypeFreeBSDACLNFS4.
+	TypeNetBSDACLNFS4 GenericAttributeType = "netbsd.acl_nfs4"
+	// TypeDragonFlyFileFlags is the GenericAttributeType used for storing a DragonFly file's flags (st_flags, as chflags(2) sets them).
+	TypeDragonFlyFileFlags GenericAttributeType = "dragonfly.file_flags"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -84,6 +96,8 @@ func init() {
 	storeGenericAttributeType(TypeOpenBSDFileFlags)
 	storeGenericAttributeType(TypeLinuxProjectID, TypeUnixSparse)
 	storeGenericAttributeType(TypeHaikuAttributes)
+	storeGenericAttributeType(TypeNetBSDFileFlags, TypeNetBSDSystemExtattrs, TypeNetBSDACLAccess, TypeNetBSDACLDefault, TypeNetBSDACLNFS4)
+	storeGenericAttributeType(TypeDragonFlyFileFlags)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

@@ -1,4 +1,4 @@
-//go:build !freebsd && !linux && !illumos && !openbsd
+//go:build !freebsd && !linux && !illumos && !openbsd && !netbsd && !dragonfly
 
 package fs
 
