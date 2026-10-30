@@ -153,19 +153,33 @@ func createFile(path string, createSize int64, sparse bool, allowRecursiveDelete
 
 func ensureSize(f *os.File, fi os.FileInfo, createSize int64, sparse bool) (*os.File, error) {
 	if sparse {
+		// BackOtter: a file is only written sparse when it is new, but
+		// should it have data after all (a race), holes must not sit
+		// over its old bytes.
+		if fi.Size() != 0 {
+			if err := f.Truncate(0); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+		}
 		err := truncateSparse(f, createSize)
 		if err != nil {
 			_ = f.Close()
 			return nil, err
 		}
-	} else if fi.Size() > createSize {
+		return f, nil
+	}
+	if fi.Size() > createSize {
 		// file is too long must shorten it
 		err := f.Truncate(createSize)
 		if err != nil {
 			_ = f.Close()
 			return nil, err
 		}
-	} else if createSize > 0 {
+	}
+	// BackOtter: preallocate a file that was too long too, so that it
+	// ends up fully allocated, whatever holes it had.
+	if createSize > 0 {
 		err := fs.PreallocateFile(f, createSize)
 		if err != nil {
 			// Just log the preallocate error but don't let it cause the restore process to fail.

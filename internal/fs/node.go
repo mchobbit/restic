@@ -130,21 +130,31 @@ func lookupUsername(uid uint32) string {
 	return username
 }
 
+// userNameLookup is a cached uid or gid lookup.
+type userNameLookup struct {
+	id uint32
+	ok bool
+}
+
 var (
-	userNameLookupCache      = make(map[string]uint32)
+	userNameLookupCache      = make(map[string]userNameLookup)
 	userNameLookupCacheMutex = sync.RWMutex{}
 )
 
-// Cached uid lookup by user name. Returns 0 when no id can be found.
+// Cached uid lookup by user name, and whether there is one: not for an
+// empty name, or a user unknown here.
 //
 //nolint:revive // capitalization is correct as is
-func lookupUid(userName string) uint32 {
+func lookupUid(userName string) (uint32, bool) {
+	if userName == "" {
+		return 0, false
+	}
 	userNameLookupCacheMutex.RLock()
-	uid, ok := userNameLookupCache[userName]
+	cached, ok := userNameLookupCache[userName]
 	userNameLookupCacheMutex.RUnlock()
 
 	if ok {
-		return uid
+		return cached.id, cached.ok
 	}
 
 	u, err := user.Lookup(userName)
@@ -152,15 +162,15 @@ func lookupUid(userName string) uint32 {
 		var s int
 		s, err = strconv.Atoi(u.Uid)
 		if err == nil {
-			uid = uint32(s)
+			cached = userNameLookup{uint32(s), true}
 		}
 	}
 
 	userNameLookupCacheMutex.Lock()
-	userNameLookupCache[userName] = uid
+	userNameLookupCache[userName] = cached
 	userNameLookupCacheMutex.Unlock()
 
-	return uid
+	return cached.id, cached.ok
 }
 
 var (
@@ -191,18 +201,22 @@ func lookupGroup(gid uint32) string {
 }
 
 var (
-	groupNameLookupCache      = make(map[string]uint32)
+	groupNameLookupCache      = make(map[string]userNameLookup)
 	groupNameLookupCacheMutex = sync.RWMutex{}
 )
 
-// Cached uid lookup by group name. Returns 0 when no id can be found.
-func lookupGid(groupName string) uint32 {
+// Cached gid lookup by group name, and whether there is one: not for an
+// empty name, or a group unknown here.
+func lookupGid(groupName string) (uint32, bool) {
+	if groupName == "" {
+		return 0, false
+	}
 	groupNameLookupCacheMutex.RLock()
-	gid, ok := groupNameLookupCache[groupName]
+	cached, ok := groupNameLookupCache[groupName]
 	groupNameLookupCacheMutex.RUnlock()
 
 	if ok {
-		return gid
+		return cached.id, cached.ok
 	}
 
 	g, err := user.LookupGroup(groupName)
@@ -210,15 +224,15 @@ func lookupGid(groupName string) uint32 {
 		var s int
 		s, err = strconv.Atoi(g.Gid)
 		if err == nil {
-			gid = uint32(s)
+			cached = userNameLookup{uint32(s), true}
 		}
 	}
 
 	groupNameLookupCacheMutex.Lock()
-	groupNameLookupCache[groupName] = gid
+	groupNameLookupCache[groupName] = cached
 	groupNameLookupCacheMutex.Unlock()
 
-	return gid
+	return cached.id, cached.ok
 }
 
 // NodeCreateAt creates the node at the given path but does NOT restore node meta data.
@@ -299,10 +313,11 @@ func NodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	if err != nil {
 		// It is common to have permission errors for folders like /home
 		// unless you're running as root, so ignore those.
-		if os.Geteuid() > 0 && errors.Is(err, os.ErrPermission) {
+		rest, warnings := SplitWarnings(err)
+		if os.Geteuid() > 0 && errors.Is(rest, os.ErrPermission) {
 			debug.Log("not running as root, ignoring permission error for %v: %v",
 				path, err)
-			return nil
+			return errors.Join(warnings...)
 		}
 		debug.Log("restoreMetadata(%s) error %v", path, err)
 	}
@@ -324,9 +339,14 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 		}
 	}
 
+	// BackOtter: the warnings among the generic attributes' errors (a file
+	// system without project IDs, a malformed attribute) are all returned,
+	// joined after the first error, for the restorer to warn about.
+	var warnings []error
 	if err := nodeRestoreGenericAttributes(node, path, warn); err != nil {
 		debug.Log("error restoring generic attributes for %v: %v", path, err)
-		if firsterr == nil {
+		err, warnings = SplitWarnings(err)
+		if err != nil && firsterr == nil {
 			firsterr = err
 		}
 	}
@@ -363,7 +383,10 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 		}
 	}
 
-	return firsterr
+	if len(warnings) == 0 {
+		return firsterr
+	}
+	return errors.Join(append([]error{firsterr}, warnings...)...)
 }
 
 func nodeRestoreTimestamps(node *data.Node, path string) error {

@@ -19,3 +19,10 @@ func setFlags(f *os.File) error {
 	}
 	return err
 }
+
+// SetNoatime sets O_NOATIME on f, open for reading, so that reading it
+// leaves its atime alone (restore --verify).  It fails, quietly, where the
+// caller isn't the file's owner or root.
+func SetNoatime(f *os.File) {
+	_ = setFlags(f)
+}

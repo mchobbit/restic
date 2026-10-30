@@ -12,6 +12,7 @@ import (
 
 	"github.com/restic/restic/internal/errors"
 	rtest "github.com/restic/restic/internal/test"
+	"github.com/spf13/pflag"
 )
 
 func TestCollectTargets(t *testing.T) {
@@ -138,4 +139,25 @@ func TestReadFilenamesRaw(t *testing.T) {
 	rtest.Assert(t, err != nil, "no error for zero byte")
 	rtest.Assert(t, strings.Contains(err.Error(), "zero byte"),
 		"wrong error message: %v", err.Error())
+}
+
+// BackOtter stores the atime by default; --with-atime=false turns that off
+// (the "=" is needed: "--with-atime false" makes "false" a path).
+func TestBackupWithAtimeDefault(t *testing.T) {
+	for _, test := range []struct {
+		args []string
+		want bool
+		rest []string
+	}{
+		{nil, true, []string{}},
+		{[]string{"--with-atime=false"}, false, []string{}},
+		{[]string{"--with-atime", "false"}, true, []string{"false"}},
+	} {
+		set := pflag.NewFlagSet("backup", pflag.ContinueOnError)
+		var opts BackupOptions
+		opts.AddFlags(set)
+		rtest.OK(t, set.Parse(test.args))
+		rtest.Equals(t, test.want, opts.WithAtime)
+		rtest.Equals(t, test.rest, set.Args())
+	}
 }

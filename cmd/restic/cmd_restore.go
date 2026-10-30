@@ -87,7 +87,7 @@ func (opts *RestoreOptions) AddFlags(f *pflag.FlagSet) {
 
 	initSingleSnapshotFilter(f, &opts.SnapshotFilter)
 	f.BoolVar(&opts.DryRun, "dry-run", false, "do not write any data, just show what would be done")
-	f.BoolVar(&opts.Sparse, "sparse", false, "restore files as sparse (files backed up with holes always are)")
+	f.BoolVar(&opts.Sparse, "sparse", false, "turn runs of zeros into holes in every new file (files backed up with holes get them anyway; all others are fully allocated)")
 	f.BoolVar(&opts.Verify, "verify", false, "verify restored files content")
 	f.Var(&opts.Overwrite, "overwrite", "overwrite behavior, one of (always|if-changed|if-newer|never)")
 	f.BoolVar(&opts.Delete, "delete", false, "delete files from target directory if they do not exist in snapshot. Use '--dry-run -vv' to check what would be deleted")

@@ -12,6 +12,6 @@ func nodeFillFileFlags(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
 	return nil
 }
 
-func restoreFileFlags(_ string, _ data.NodeType, _ uint32) error {
+func restoreFileFlags(_ string, _ data.NodeType, _ uint32, _ []byte) error {
 	return nil
 }

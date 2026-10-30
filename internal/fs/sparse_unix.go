@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package fs
 
@@ -17,7 +17,7 @@ func nodeFillSparse(node *data.Node, path string, fi *ExtendedFileInfo) {
 	var firstHole func() (int64, error)
 	if seekHole >= 0 {
 		firstHole = func() (int64, error) {
-			hole, err := seekFirstHole(path)
+			hole, err := seekFirstHole(path, fi)
 			if err != nil {
 				debug.Log("no SEEK_HOLE for %v: %v", path, err)
 			}
@@ -29,13 +29,21 @@ func nodeFillSparse(node *data.Node, path string, fi *ExtendedFileInfo) {
 	}
 }
 
-// seekFirstHole returns the offset of the first hole in the file at path, or
-// its size if it has none.
-func seekFirstHole(path string) (int64, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+// seekFirstHole returns the offset of the first hole in the regular file at
+// path, which fi describes, or its size if it has none.  A file that isn't
+// the one fi describes any more gives errNotNodeType.
+func seekFirstHole(path string, fi *ExtendedFileInfo) (int64, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = unix.Close(fd) }()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return 0, err
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || uint64(st.Dev) != fi.DeviceID || uint64(st.Ino) != fi.Inode {
+		return 0, errNotNodeType
+	}
 	return unix.Seek(fd, 0, seekHole)
 }

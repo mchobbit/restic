@@ -1,3 +1,5 @@
+//go:build !windows
+
 package fs
 
 import (
@@ -29,7 +31,15 @@ func TestHasHoles(t *testing.T) {
 		{"all hole", 1 << 30, 0, hole(0, nil), true},
 		{"hole in the middle", 1 << 20, 8, hole(4096, nil), true},
 		{"compressed, no holes", 1 << 20, 8, hole(1<<20, nil), false},
-		{"SEEK_HOLE fails", 1 << 20, 8, hole(0, syscall.EINVAL), false},
+		// The file system can't answer: the blocks decide.
+		{"SEEK_HOLE EINVAL", 1 << 20, 8, hole(0, syscall.EINVAL), true},
+		{"SEEK_HOLE EOPNOTSUPP", 1 << 20, 8, hole(0, syscall.EOPNOTSUPP), true},
+		{"SEEK_HOLE ENOTSUP", 1 << 20, 8, hole(0, syscall.ENOTSUP), true},
+		{"SEEK_HOLE ENOTTY", 1 << 20, 8, hole(0, syscall.ENOTTY), true},
+		// Any other error: no holes.
+		{"SEEK_HOLE ENXIO", 1 << 20, 8, hole(0, syscall.ENXIO), false},
+		{"SEEK_HOLE EACCES", 1 << 20, 8, hole(0, syscall.EACCES), false},
+		{"SEEK_HOLE EWOULDBLOCK", 1 << 20, 8, hole(0, syscall.EWOULDBLOCK), false},
 		{"no SEEK_HOLE", 1 << 20, 8, nil, true},
 		{"no SEEK_HOLE, dense", 1 << 20, 2048, nil, false},
 	} {

@@ -9,14 +9,18 @@ import (
 	"github.com/restic/restic/internal/errors"
 )
 
+// lchown gives the file at path node's owner and group: their IDs, or with
+// lookupByName the IDs their names have here.  A name that is empty or
+// unknown here falls back to the ID in the snapshot, never to root.
 func lchown(name string, node *data.Node, lookupByName bool) error {
-	var uid, gid uint32
+	uid, gid := node.UID, node.GID
 	if lookupByName {
-		uid = lookupUid(node.User)
-		gid = lookupGid(node.Group)
-	} else {
-		uid = node.UID
-		gid = node.GID
+		if id, ok := lookupUid(node.User); ok {
+			uid = id
+		}
+		if id, ok := lookupGid(node.Group); ok {
+			gid = id
+		}
 	}
 
 	return os.Lchown(name, int(uid), int(gid))

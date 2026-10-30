@@ -24,7 +24,7 @@ func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
 	return nil
 }
 
-func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
+func restoreFileFlags(path string, typ data.NodeType, flags uint32, _ []byte) error {
 	set := func(f uint32) error {
 		var err error
 		if typ == data.NodeTypeSymlink {

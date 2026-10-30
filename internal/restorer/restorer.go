@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 
 	"github.com/restic/restic/internal/data"
@@ -32,6 +33,15 @@ type Restorer struct {
 	// and device in the snapshot: flags belong to the file, not each name,
 	// and an immutable file (on illumos) refuses having them set again.
 	fileFlagsLinked map[[2]uint64]bool
+	// pendingDirs are the directories, outermost first, above the node
+	// the first pass is at that aren't selected themselves but may have
+	// selected entries (--include): see ensureParents.
+	pendingDirs []pendingDir
+	// warned are the warnings given once per restore, by key, with the
+	// number of times each came up; see warnAbout.
+	warnedMu sync.Mutex
+	warned   map[string]*onceWarning
+	warnKeys []string
 
 	Error func(location string, err error) error
 	Warn  func(message string)
@@ -254,7 +264,14 @@ func (res *Restorer) traverseTreeInner(ctx context.Context, target, location str
 			var childFilenames []string
 
 			if childMayBeSelected {
+				pending := !selectedForRestore
+				if pending {
+					res.pendingDirs = append(res.pendingDirs, pendingDir{target: nodeTarget, location: nodeLocation, node: node})
+				}
 				childFilenames, childHasRestored, err = res.traverseTreeInner(ctx, nodeTarget, nodeLocation, *node.Subtree, visitor)
+				if pending {
+					res.pendingDirs = res.pendingDirs[:len(res.pendingDirs)-1]
+				}
 				err = res.sanitizeError(nodeLocation, err)
 				if err != nil {
 					return nil, hasRestored, err
@@ -314,11 +331,134 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	err := fs.NodeRestoreMetadata(node, target, res.Warn, res.XattrSelectFilter, res.opts.OwnershipByName)
 	if err != nil {
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
+		err = res.warnAboutAll(location, err)
 	}
-	if flags, ok := fs.NodeFileFlags(node); ok && !res.flagsQueued(node) {
-		res.fileFlags = append(res.fileFlags, fileFlags{target, location, node.Type, flags})
+	if flags, ok := res.nodeFileFlags(node, location); ok && !res.flagsQueued(node) {
+		res.fileFlags = append(res.fileFlags, fileFlags{target, location, node.Type, flags, res.btrfsCompression(node)})
 	}
 	return err
+}
+
+// nodeFileFlags returns the file flags node holds for this OS, and whether
+// it holds any, warning once about malformed ones (which are none).
+func (res *Restorer) nodeFileFlags(node *data.Node, location string) (uint32, bool) {
+	flags, ok, err := fs.NodeFileFlags(node)
+	if err != nil {
+		res.warnAbout(location, err)
+	}
+	return flags, ok
+}
+
+// nodeSparse tells whether node is a file that had holes when it was backed
+// up, warning once about a malformed marker (which is none).
+func (res *Restorer) nodeSparse(node *data.Node, location string) bool {
+	sparse, err := node.Sparse()
+	if err != nil {
+		res.warnAbout(location, err)
+	}
+	return sparse
+}
+
+// btrfsCompression returns node's btrfs.compression extended attribute,
+// when it has one and the restore sets it, for RestoreFileFlags to set again
+// after the flags; nil otherwise.
+func (res *Restorer) btrfsCompression(node *data.Node) []byte {
+	const name = "btrfs.compression"
+	if !res.XattrSelectFilter(name) {
+		return nil
+	}
+	for _, attr := range node.ExtendedAttributes {
+		if attr.Name == name {
+			return append([]byte{}, attr.Value...)
+		}
+	}
+	return nil
+}
+
+// onceWarning is a warning given once per restore: its text without the
+// path, the location it was given for, and how often it came up (when that
+// is counted).
+type onceWarning struct {
+	text, first string
+	count       int
+}
+
+// warnAboutAll gives the warnings in err (fs.IsWarning) and returns the rest.
+func (res *Restorer) warnAboutAll(location string, err error) error {
+	rest, warnings := fs.SplitWarnings(err)
+	for _, w := range warnings {
+		res.warnAbout(location, w)
+	}
+	return rest
+}
+
+// warnAbout gives the warning err for location.  Metadata the target file
+// system doesn't support (fs.UnsupportedError) is a warning once per
+// attribute and bits, with the number of files at the end (warnTotals), and
+// a malformed attribute (data.MalformedAttributeError) once per attribute.
+// Neither is an error: the restore succeeds.  Other warnings
+// (fs.FlagsWarning) are given every time.
+func (res *Restorer) warnAbout(location string, err error) {
+	var unsupported *fs.UnsupportedError
+	var malformed *data.MalformedAttributeError
+	var key, text, msg string
+	counted := false
+	switch {
+	case errors.As(err, &unsupported):
+		text = fmt.Sprintf("%v", unsupported.Attr)
+		if unsupported.Bits != 0 {
+			text = fmt.Sprintf("%v %#x", unsupported.Attr, unsupported.Bits)
+		}
+		text += " not supported by the target file system"
+		key, counted = text, true
+		msg = fmt.Sprintf("%v: %v: %v", location, text, unsupported.Err)
+	case errors.As(err, &malformed):
+		text = fmt.Sprintf("ignoring malformed %v", malformed.Attr)
+		key = text
+		msg = fmt.Sprintf("ignoring %v of %v: %v", malformed.Attr, location, malformed.Err)
+	default:
+		res.warn(err.Error())
+		return
+	}
+
+	res.warnedMu.Lock()
+	w, ok := res.warned[key]
+	if !ok {
+		if res.warned == nil {
+			res.warned = make(map[string]*onceWarning)
+		}
+		w = &onceWarning{text: text, first: location}
+		res.warned[key] = w
+		res.warnKeys = append(res.warnKeys, key)
+	}
+	if counted {
+		w.count++
+	}
+	res.warnedMu.Unlock()
+	if !ok {
+		res.warn(msg)
+	}
+}
+
+// warnTotals gives the number of files each warning given once came up for,
+// where that was more than one.
+func (res *Restorer) warnTotals() {
+	res.warnedMu.Lock()
+	defer res.warnedMu.Unlock()
+	for _, key := range res.warnKeys {
+		if w := res.warned[key]; w.count > 1 {
+			res.warn(fmt.Sprintf("%v: %d files in all, the first %v", w.text, w.count, w.first))
+		}
+	}
+	res.warned, res.warnKeys = nil, nil
+}
+
+func (res *Restorer) warn(msg string) {
+	if res.Warn == nil {
+		debug.Log("warning: %v", msg)
+		return
+	}
+	res.Warn(msg)
 }
 
 // flagsQueued tells whether node is another name of a hard-linked file whose
@@ -344,6 +484,7 @@ type fileFlags struct {
 	target, location string
 	typ              data.NodeType
 	flags            uint32
+	compression      []byte // btrfs.compression, to set again after the flags
 }
 
 // restoreFileFlags sets the file flags noted while restoring metadata.  They
@@ -353,8 +494,8 @@ type fileFlags struct {
 func (res *Restorer) restoreFileFlags() error {
 	for _, f := range res.fileFlags {
 		debug.Log("restoreFileFlags %v %#x", f.target, f.flags)
-		if err := fs.RestoreFileFlags(f.target, f.typ, f.flags); err != nil {
-			if err := res.sanitizeError(f.location, err); err != nil {
+		if err := fs.RestoreFileFlags(f.target, f.typ, f.flags, f.compression); err != nil {
+			if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {
 				return err
 			}
 		}
@@ -400,23 +541,65 @@ func (res *Restorer) ensureDir(target string) error {
 	return fs.MkdirAll(target, 0700)
 }
 
-// ensureDirWithFlags is ensureDir for a directory with file flags.  When it
-// creates the directory, it sets those flags that a file system only takes
-// on an empty directory (casefolding) at once, before anything goes in; the
+// prepareDirForFlags is fs.PrepareDirForFlags, replaced by tests.
+var prepareDirForFlags = fs.PrepareDirForFlags
+
+// ensureDirWithFlags is ensureDir for a directory whose node has the file
+// flags flags (0 for none).  When it creates the directory, or finds it
+// empty, it makes those flags that a file system only changes on an empty
+// directory (casefolding) what flags says at once, before anything goes in:
+// it sets them, or clears them where the directory inherited them.  The
 // others are set last, with restoreFileFlags.
 func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
 	if res.opts.DryRun {
 		return nil
 	}
-	_, err := fs.Lstat(target)
-	created := errors.Is(err, os.ErrNotExist)
+	if !fs.HasDirFlagsBeforeEntries() {
+		return res.ensureDir(target)
+	}
+	fi, err := fs.Lstat(target)
+	created := errors.Is(err, os.ErrNotExist) || err == nil && !fi.IsDir()
 	if err := res.ensureDir(target); err != nil {
 		return err
 	}
 	if !created {
-		return nil
+		empty, err := fs.IsEmptyDir(target)
+		if err != nil {
+			debug.Log("not preparing %v for its flags: %v", target, err)
+			return nil
+		}
+		if !empty {
+			return nil
+		}
 	}
-	return fs.PrepareDirForFlags(target, flags)
+	return prepareDirForFlags(target, flags)
+}
+
+// pendingDir is a directory that isn't selected for the restore, but may
+// have selected entries (--include).
+type pendingDir struct {
+	target, location string
+	node             *data.Node
+	done             bool
+}
+
+// ensureParents creates the pending directories above the node the first
+// pass is at, outermost first, each with its flags (ensureDirWithFlags): an
+// --include that selects only some of a directory's entries leaves it
+// unselected, but it is still created, and gets its metadata at the end.
+func (res *Restorer) ensureParents() error {
+	for i := range res.pendingDirs {
+		p := &res.pendingDirs[i]
+		if p.done {
+			continue
+		}
+		flags, _ := res.nodeFileFlags(p.node, p.location)
+		if err := res.ensureDirWithFlags(p.target, flags); err != nil {
+			return err
+		}
+		p.done = true
+	}
+	return nil
 }
 
 // RestoreTo creates the directories and files in the snapshot below dst.
@@ -456,16 +639,26 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 			if location != string(filepath.Separator) {
 				res.opts.Progress.AddFile(0)
 			}
-			if node != nil {
-				if flags, ok := fs.NodeFileFlags(node); ok {
-					return res.ensureDirWithFlags(target, flags)
+			if node == nil {
+				// The target itself: when restoring "ID:subfolder", it
+				// has the subfolder's node, and gets its casefolding
+				// while empty, as any other directory.
+				if res.TargetNode == nil {
+					return res.ensureDir(target)
 				}
+				node = res.TargetNode
+			} else if err := res.ensureParents(); err != nil {
+				return err
 			}
-			return res.ensureDir(target)
+			flags, _ := res.nodeFileFlags(node, location)
+			return res.ensureDirWithFlags(target, flags)
 		},
 
 		visitNode: func(node *data.Node, target, location string) error {
 			debug.Log("first pass, visitNode: mkdir %q, leaveDir on second pass should restore metadata", location)
+			if err := res.ensureParents(); err != nil {
+				return err
+			}
 			if err := res.ensureDir(filepath.Dir(target)); err != nil {
 				return err
 			}
@@ -484,23 +677,36 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				idx.Add(node.Inode, node.DeviceID, location)
 			}
 
+			sparse := res.nodeSparse(node, location)
 			buf, err = res.withOverwriteCheck(ctx, node, target, location, false, buf, func(updateMetadataOnly bool, matches *fileState) error {
 				if updateMetadataOnly {
 					res.opts.Progress.AddSkippedFile(location, node.Size)
+					// BackOtter: a file whose contents are right, but
+					// that should be fully allocated, gets its holes
+					// filled (a swap file from an interrupted restore).
+					if !res.opts.DryRun && !res.opts.Sparse && !sparse {
+						fs.FillHoles(target, int64(node.Size))
+					}
 				} else {
 					res.opts.Progress.AddFile(node.Size)
 					if !res.opts.DryRun {
+						// Whether the file goes into a new, empty file,
+						// which alone may be written sparse: a hole in
+						// an existing one would keep its old bytes.  The
+						// restorer replaces anything but a regular file.
+						fi, err := fs.Lstat(target)
+						fresh := errors.Is(err, os.ErrNotExist) || err == nil && !fi.Mode().IsRegular()
 						// Flags a file system only takes on an empty
 						// file (btrfs's no-copy-on-write) go on now,
 						// before the file restorer writes its data.
-						if flags, ok := fs.NodeFileFlags(node); ok {
+						if flags, ok := res.nodeFileFlags(node, location); ok {
 							if err := fs.PrepareFileForFlags(target, flags); err != nil {
 								if err := res.sanitizeError(location, err); err != nil {
 									return err
 								}
 							}
 						}
-						filerestorer.addFile(location, node.Content, int64(node.Size), matches, node.Sparse())
+						filerestorer.addFile(location, node.Content, int64(node.Size), matches, sparse, fresh)
 					} else {
 						action := restoreui.ActionFileUpdated
 						if matches == nil {
@@ -583,7 +789,9 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 	if err != nil {
 		return restoredFileCount, err
 	}
-	return restoredFileCount, res.restoreFileFlags()
+	err = res.restoreFileFlags()
+	res.warnTotals()
+	return restoredFileCount, err
 }
 
 func (res *Restorer) removeUnexpectedFiles(ctx context.Context, target, location string, expectedFilenames []string) error {
@@ -818,6 +1026,8 @@ func (res *Restorer) verifyFile(ctx context.Context, target string, node *data.N
 	if err != nil {
 		return nil, buf, err
 	}
+	// BackOtter: reading the file leaves its atime, restored or not, alone.
+	fs.SetNoatime(f)
 	defer func() {
 		_ = f.Close()
 	}()

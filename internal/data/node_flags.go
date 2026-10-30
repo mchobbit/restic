@@ -37,7 +37,7 @@ func (node *Node) SetGenericAttribute(typ GenericAttributeType, v any) error {
 func (node *Node) FileFlags(typ GenericAttributeType) (flags uint32, ok bool, err error) {
 	ok, err = node.GenericAttribute(typ, &flags)
 	if err != nil {
-		return 0, false, err
+		return 0, false, &MalformedAttributeError{Attr: typ, Err: err}
 	}
 	return flags, ok, nil
 }

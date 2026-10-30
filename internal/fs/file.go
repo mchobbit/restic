@@ -2,7 +2,10 @@ package fs
 
 import (
 	"fmt"
+	"io"
 	"os"
+
+	"github.com/restic/restic/internal/errors"
 )
 
 // MkdirAll creates a directory named path, along with any necessary parents,
@@ -84,4 +87,23 @@ func Readdirnames(filesystem FS, dir string, flags int) ([]string, error) {
 	}
 
 	return entries, nil
+}
+
+// IsEmptyDir tells whether the directory at path has no entries.  It reads
+// one at most, through Local, so that reading leaves its atime alone where
+// it can.
+func IsEmptyDir(path string) (bool, error) {
+	f, err := Local{}.OpenFile(path, O_RDONLY|O_DIRECTORY|O_NOFOLLOW, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	names, err := f.Readdirnames(1)
+	if errors.Is(err, io.EOF) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(names) == 0, nil
 }

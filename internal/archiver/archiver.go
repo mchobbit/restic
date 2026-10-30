@@ -124,7 +124,8 @@ type Archiver struct {
 
 	// WithAtime configures if the access time for files and directories should
 	// be saved. Enabling it may result in much metadata, so it's off by
-	// default.
+	// default here; BackOtter's backup command turns it on (--with-atime),
+	// and --with-atime=false off again.
 	WithAtime bool
 
 	// Flags controlling change detection. See doc/040_backup.rst for details.

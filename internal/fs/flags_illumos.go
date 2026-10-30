@@ -66,7 +66,7 @@ func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error 
 	return nil
 }
 
-func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
+func restoreFileFlags(path string, typ data.NodeType, flags uint32, _ []byte) error {
 	f, err := sysattrView(path, typ, true)
 	if err != nil {
 		return err

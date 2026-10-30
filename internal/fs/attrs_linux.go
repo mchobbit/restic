@@ -65,26 +65,40 @@ func nodeFillOSAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
 
 // nodeRestoreOSAttributes restores the project ID, with the extended
 // attributes, before the file flags: an immutable file refuses a new one.
+// Only regular files and directories have one, here as at backup: a
+// symlink, FIFO, socket or device can't be opened for FS_IOC_FSSETXATTR
+// without following it or side effects.  A file system without project IDs
+// gives an *UnsupportedError, a malformed one a
+// data.MalformedAttributeError, for the restorer to warn about.
 func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	id, ok, err := node.ProjectID()
 	if !ok || err != nil {
 		return err
 	}
-	fd, err := openForFlags(path, node.Type)
+	if node.Type != data.NodeTypeFile && node.Type != data.NodeTypeDir {
+		return nil
+	}
+	fd, err := openForFlags(path, node.Type, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
+	unsupported := func(err error) error {
+		if unsupportedErr(err) {
+			return &UnsupportedError{Attr: data.TypeLinuxProjectID, Err: err}
+		}
+		return err
+	}
 	var fsx fsxattr
 	if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &fsx); err != nil {
-		return &os.PathError{Op: "FS_IOC_FSGETXATTR", Path: path, Err: err}
+		return unsupported(&os.PathError{Op: "FS_IOC_FSGETXATTR", Path: path, Err: err})
 	}
 	if fsx.projid == id {
 		return nil
 	}
 	fsx.projid = id
 	if err := ioctlFsxattr(fd, fsIOCFSSetXattr, &fsx); err != nil {
-		return &os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err}
+		return unsupported(&os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err})
 	}
 	return nil
 }

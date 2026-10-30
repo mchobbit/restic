@@ -9,3 +9,6 @@ import "os"
 func setFlags(_ *os.File) error {
 	return nil
 }
+
+// SetNoatime does nothing here: only Linux has O_NOATIME.
+func SetNoatime(_ *os.File) {}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/restic/chunker"
@@ -126,7 +127,7 @@ func newTestRepo(content []TestFile) *TestRepo {
 		for _, blob := range file.blobs {
 			content = append(content, restic.Hash([]byte(blob.data)))
 		}
-		files = append(files, &fileInfo{location: file.name, blobs: content})
+		files = append(files, &fileInfo{location: file.name, blobs: content, fresh: true})
 	}
 
 	repo := &TestRepo{
@@ -376,9 +377,9 @@ func TestFatalDownloadError(t *testing.T) {
 	rtest.Assert(t, errors[0] == "file2", "expected error for file2, got: %v", errors[0])
 }
 
-// A file marked as having had holes (data.TypeUnixSparse) is written sparse
-// as with --sparse, where --sparse would write it sparse; other files are
-// fully allocated unless --sparse is given.
+// A file marked as having had holes (data.TypeUnixSparse) is written sparse,
+// as every file is with --sparse, whatever its blobs, but only into a new
+// file; other files are fully allocated.
 func TestFileRestorerSparseMarker(t *testing.T) {
 	zeros := string(make([]byte, chunker.MinSize))
 	withZeros := []TestBlob{{"data", "pack1"}, {zeros, "pack1"}, {"end", "pack1"}}
@@ -386,23 +387,32 @@ func TestFileRestorerSparseMarker(t *testing.T) {
 	single := []TestBlob{{"data", "pack1"}}
 
 	for _, test := range []struct {
-		name          string
-		blobs         []TestBlob
-		holes, sparse bool
-		want          bool
+		name                 string
+		blobs                []TestBlob
+		holes, sparse, fresh bool
+		want                 bool
 	}{
-		{"zero chunk, marked", withZeros, true, false, true},
-		{"zero chunk, unmarked", withZeros, false, false, false},
-		{"zero chunk, --sparse", withZeros, false, true, true},
-		{"no zero chunk, marked", noZeros, true, false, false},
-		{"single blob, marked", single, true, false, true},
-		{"single blob, unmarked", single, false, false, false},
+		{"zero chunk, marked", withZeros, true, false, true, true},
+		{"zero chunk, unmarked", withZeros, false, false, true, false},
+		{"zero chunk, --sparse", withZeros, false, true, true, true},
+		{"no zero chunk, marked", noZeros, true, false, true, true},
+		{"no zero chunk, --sparse", noZeros, false, true, true, true},
+		{"single blob, marked", single, true, false, true, true},
+		{"single blob, unmarked", single, false, false, true, false},
+		{"marked, target exists", withZeros, true, false, false, false},
+		{"--sparse, target exists", withZeros, false, true, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := newTestRepo([]TestFile{{name: "file", blobs: test.blobs}})
-			r := newFileRestorer(rtest.TempDir(t), repo.loader, repo.Lookup, 2, test.sparse, false, repo.StartWarmup, nil)
+			dst := rtest.TempDir(t)
+			r := newFileRestorer(dst, repo.loader, repo.Lookup, 2, test.sparse, false, repo.StartWarmup, nil)
 			for _, file := range repo.files {
-				r.addFile(file.location, file.blobs.(restic.IDs), int64(len(repo.fileContent(file))), nil, test.holes)
+				if !test.fresh {
+					// Old bytes, which a hole would leave in place.
+					old := bytes.Repeat([]byte{0xaa}, len(repo.fileContent(file))+100)
+					rtest.OK(t, os.WriteFile(r.targetPath(file.location), old, 0o600))
+				}
+				r.addFile(file.location, file.blobs.(restic.IDs), int64(len(repo.fileContent(file))), nil, test.holes, test.fresh)
 			}
 			files := r.files
 
@@ -413,4 +423,21 @@ func TestFileRestorerSparseMarker(t *testing.T) {
 			rtest.Equals(t, repo.fileContent(files[0]), string(content))
 		})
 	}
+}
+
+// A file to write sparse that has data after all (a race) is emptied first,
+// so that no hole sits over its old bytes.
+func TestEnsureSizeSparseTruncates(t *testing.T) {
+	path := filepath.Join(rtest.TempDir(t), "file")
+	rtest.OK(t, os.WriteFile(path, bytes.Repeat([]byte{0xaa}, 8192), 0o600))
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	rtest.OK(t, err)
+	fi, err := f.Stat()
+	rtest.OK(t, err)
+	f, err = ensureSize(f, fi, 4096, true)
+	rtest.OK(t, err)
+	rtest.OK(t, f.Close())
+	content, err := os.ReadFile(path)
+	rtest.OK(t, err)
+	rtest.Equals(t, make([]byte, 4096), content)
 }

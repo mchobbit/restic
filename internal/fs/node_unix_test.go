@@ -184,3 +184,32 @@ func TestLchown(t *testing.T) {
 		rtest.OK(t, err)
 	})
 }
+
+// With ownership by name, a name that is empty or unknown here falls back to
+// the ID in the snapshot, never to root.
+func TestLchownByNameFallback(t *testing.T) {
+	_, ok := lookupUid("")
+	rtest.Assert(t, !ok, "a uid for the empty user name")
+	_, ok = lookupUid("no-such-user-bko")
+	rtest.Assert(t, !ok, "a uid for an unknown user")
+	_, ok = lookupGid("no-such-group-bko")
+	rtest.Assert(t, !ok, "a gid for an unknown group")
+
+	// As root, an ID no user has; otherwise our own, the only one we may
+	// give a file (falling back to root would fail).
+	uid, gid := uint32(os.Getuid()), uint32(os.Getgid())
+	if uid == 0 {
+		uid, gid = 54321, 54322
+	}
+	for _, name := range []string{"", "no-such-user-bko"} {
+		path := filepath.Join(rtest.TempDir(t), "file")
+		rtest.OK(t, os.WriteFile(path, nil, 0o600))
+		node := &data.Node{Type: data.NodeTypeFile, User: name, Group: name, UID: uid, GID: gid}
+		rtest.OK(t, lchown(path, node, true))
+		fi, err := os.Lstat(path)
+		rtest.OK(t, err)
+		st := fi.Sys().(*syscall.Stat_t)
+		rtest.Equals(t, uid, uint32(st.Uid))
+		rtest.Equals(t, gid, uint32(st.Gid))
+	}
+}

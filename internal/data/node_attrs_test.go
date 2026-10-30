@@ -2,6 +2,7 @@ package data
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	rtest "github.com/restic/restic/internal/test"
@@ -9,7 +10,9 @@ import (
 
 func TestNodeSparse(t *testing.T) {
 	var node Node
-	rtest.Assert(t, !node.Sparse(), "a node without the attribute is sparse")
+	sparse, err := node.Sparse()
+	rtest.OK(t, err)
+	rtest.Assert(t, !sparse, "a node without the attribute is sparse")
 
 	node.SetSparse()
 	buf, err := json.Marshal(node.GenericAttributes)
@@ -18,12 +21,23 @@ func TestNodeSparse(t *testing.T) {
 
 	var back Node
 	rtest.OK(t, json.Unmarshal(buf, &back.GenericAttributes))
-	rtest.Assert(t, back.Sparse(), "sparse marker lost in JSON")
+	sparse, err = back.Sparse()
+	rtest.OK(t, err)
+	rtest.Assert(t, sparse, "sparse marker lost in JSON")
 
 	back.GenericAttributes[TypeUnixSparse] = json.RawMessage(`false`)
-	rtest.Assert(t, !back.Sparse(), "unix.sparse false taken for sparse")
-	back.GenericAttributes[TypeUnixSparse] = json.RawMessage(`"yes"`)
-	rtest.Assert(t, !back.Sparse(), "a malformed unix.sparse taken for sparse")
+	sparse, err = back.Sparse()
+	rtest.OK(t, err)
+	rtest.Assert(t, !sparse, "unix.sparse false taken for sparse")
+
+	for _, raw := range []string{`"yes"`, `1`, `"x"`} {
+		back.GenericAttributes[TypeUnixSparse] = json.RawMessage(raw)
+		sparse, err = back.Sparse()
+		rtest.Assert(t, !sparse, "a malformed unix.sparse %s taken for sparse", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeUnixSparse,
+			"unix.sparse %s: want a MalformedAttributeError, got %v", raw, err)
+	}
 }
 
 func TestNodeProjectID(t *testing.T) {
@@ -46,7 +60,30 @@ func TestNodeProjectID(t *testing.T) {
 	rtest.Assert(t, ok, "project ID lost in JSON")
 	rtest.Equals(t, uint32(4294967295), id)
 
-	back.GenericAttributes[TypeLinuxProjectID] = json.RawMessage(`-1`)
-	_, _, err = back.ProjectID()
-	rtest.Assert(t, err != nil, "no error for a negative project ID")
+	// An explicit 0 is the same as none: nothing to restore.
+	back.GenericAttributes[TypeLinuxProjectID] = json.RawMessage(`0`)
+	_, ok, err = back.ProjectID()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "project ID 0 taken for one to restore")
+
+	for _, raw := range []string{`-1`, `1.5`, `"x"`, `4294967296`} {
+		back.GenericAttributes[TypeLinuxProjectID] = json.RawMessage(raw)
+		_, ok, err = back.ProjectID()
+		rtest.Assert(t, !ok, "malformed project ID %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxProjectID,
+			"project ID %s: want a MalformedAttributeError, got %v", raw, err)
+	}
+}
+
+func TestNodeFileFlagsMalformed(t *testing.T) {
+	var node Node
+	for _, raw := range []string{`-1`, `1.5`, `"x"`} {
+		node.GenericAttributes = map[GenericAttributeType]json.RawMessage{TypeLinuxInodeFlags: json.RawMessage(raw)}
+		_, ok, err := node.FileFlags(TypeLinuxInodeFlags)
+		rtest.Assert(t, !ok, "malformed file flags %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxInodeFlags,
+			"file flags %s: want a MalformedAttributeError, got %v", raw, err)
+	}
 }

@@ -11,7 +11,6 @@ import (
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/feature"
-	"github.com/restic/restic/internal/repository"
 	"github.com/restic/restic/internal/restic"
 	"github.com/restic/restic/internal/ui/restore"
 )
@@ -26,6 +25,7 @@ type fileInfo struct {
 	inProgress bool
 	sparse     bool
 	holes      bool // the file had holes when backed up (data.TypeUnixSparse)
+	fresh      bool // nothing was at the target path when the file was queued
 	size       int64
 	location   string      // file on local filesystem relative to restorer basedir
 	blobs      interface{} // blobs of the file
@@ -55,7 +55,6 @@ type fileRestorer struct {
 
 	workerCount int
 	filesWriter *filesWriter
-	zeroChunk   restic.ID
 	sparse      bool
 	progress    *restore.Progress
 
@@ -84,7 +83,6 @@ func newFileRestorer(dst string,
 		blobsLoader:          blobsLoader,
 		startWarmup:          startWarmup,
 		filesWriter:          newFilesWriter(workerCount, allowRecursiveDelete),
-		zeroChunk:            repository.ZeroChunk(),
 		sparse:               sparse,
 		progress:             progress,
 		allowRecursiveDelete: allowRecursiveDelete,
@@ -96,10 +94,12 @@ func newFileRestorer(dst string,
 }
 
 // addFile adds a file to restore.  holes says it had holes when it was backed
-// up: it is written sparse, as all files are with --sparse, while other
-// files are fully allocated, zeros and all.
-func (r *fileRestorer) addFile(location string, content restic.IDs, size int64, state *fileState, holes bool) {
-	r.files = append(r.files, &fileInfo{location: location, blobs: content, size: size, state: state, holes: holes})
+// up, and fresh that nothing was at its target path: such a file is written
+// sparse, as every fresh file is with --sparse, while all others are fully
+// allocated, zeros and all.  A file that was there is never written sparse:
+// a hole would leave its old bytes in place.
+func (r *fileRestorer) addFile(location string, content restic.IDs, size int64, state *fileState, holes, fresh bool) {
+	r.files = append(r.files, &fileInfo{location: location, blobs: content, size: size, state: state, holes: holes, fresh: fresh})
 }
 
 func (r *fileRestorer) targetPath(location string) string {
@@ -141,7 +141,10 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 
 		fileBlobs := file.blobs.(restic.IDs)
 		largeFile := len(fileBlobs) > largeFileBlobCount
-		sparse := r.sparse || file.holes
+		// BackOtter: sparse or not is decided per file, whatever its blobs:
+		// a sparse file gets each blob's leading zeros as a hole
+		// (partialFile.WriteAt).
+		file.sparse = (r.sparse || file.holes) && file.fresh
 		var packsMap map[restic.ID][]fileBlobInfo
 		if largeFile {
 			packsMap = make(map[restic.ID][]fileBlobInfo)
@@ -169,20 +172,12 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 				packOrder = append(packOrder, packID)
 			}
 			pack.files[file] = struct{}{}
-			if blob.ID.Equal(r.zeroChunk) {
-				file.sparse = sparse
-			}
 		})
 		if err != nil {
 			// repository index is messed up, can't do anything
 			return err
 		}
 
-		if len(fileBlobs) == 1 {
-			// no need to preallocate files with a single block, thus we can always consider them to be sparse
-			// in addition, a short chunk will never match r.zeroChunk which would prevent sparseness for short files
-			file.sparse = sparse
-		}
 		if file.state != nil {
 			// The restorer currently cannot punch new holes into an existing files.
 			// Thus sections that contained data but should be sparse after restoring

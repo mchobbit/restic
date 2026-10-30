@@ -42,7 +42,7 @@ func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
 	return nil
 }
 
-func restoreFileFlags(path string, _ data.NodeType, flags uint32) error {
+func restoreFileFlags(path string, _ data.NodeType, flags uint32, _ []byte) error {
 	// Leave the flags that aren't kept as the file has them.
 	var st unix.Stat_t
 	if err := unix.Lstat(path, &st); err != nil {
