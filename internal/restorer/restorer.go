@@ -28,6 +28,10 @@ type Restorer struct {
 	fileList map[string]bool
 	// fileFlags are the files to set file flags on, last; see RestoreTo.
 	fileFlags []fileFlags
+	// fileFlagsLinked are the hard-linked files among them, by the inode
+	// and device in the snapshot: flags belong to the file, not each name,
+	// and an immutable file (on illumos) refuses having them set again.
+	fileFlagsLinked map[[2]uint64]bool
 
 	Error func(location string, err error) error
 	Warn  func(message string)
@@ -311,10 +315,27 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	if err != nil {
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 	}
-	if flags, ok := fs.NodeFileFlags(node); ok {
+	if flags, ok := fs.NodeFileFlags(node); ok && !res.flagsQueued(node) {
 		res.fileFlags = append(res.fileFlags, fileFlags{target, location, node.Type, flags})
 	}
 	return err
+}
+
+// flagsQueued tells whether node is another name of a hard-linked file whose
+// flags are already queued, and notes it if not.
+func (res *Restorer) flagsQueued(node *data.Node) bool {
+	if node.Type != data.NodeTypeFile || node.Links <= 1 {
+		return false
+	}
+	key := [2]uint64{node.Inode, node.DeviceID}
+	if res.fileFlagsLinked[key] {
+		return true
+	}
+	if res.fileFlagsLinked == nil {
+		res.fileFlagsLinked = make(map[[2]uint64]bool)
+	}
+	res.fileFlagsLinked[key] = true
+	return false
 }
 
 // fileFlags is a file whose file flags the restorer sets once it has
@@ -338,7 +359,7 @@ func (res *Restorer) restoreFileFlags() error {
 			}
 		}
 	}
-	res.fileFlags = nil
+	res.fileFlags, res.fileFlagsLinked = nil, nil
 	return nil
 }
 

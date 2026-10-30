@@ -63,6 +63,8 @@ const (
 	TypeFreeBSDACLNFS4 GenericAttributeType = "freebsd.acl_nfs4"
 	// TypeIllumosACL is the GenericAttributeType used for storing an illumos file's ACL (ZFS's NFSv4-style ACEs), when it says more than its mode.
 	TypeIllumosACL GenericAttributeType = "illumos.acl"
+	// TypeIllumosSystemAttributes is the GenericAttributeType used for storing an illumos file's system attributes (immutable, appendonly, nounlink, nodump, hidden, ...; chmod(1)'s S+v), as a bitmask.
+	TypeIllumosSystemAttributes GenericAttributeType = "illumos.system_attributes"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -70,7 +72,7 @@ func init() {
 	storeGenericAttributeType(TypeCreationTime, TypeFileAttributes, TypeSecurityDescriptor)
 	storeGenericAttributeType(TypeFreeBSDFileFlags, TypeLinuxInodeFlags)
 	storeGenericAttributeType(TypeFreeBSDSystemExtattrs, TypeFreeBSDACLAccess, TypeFreeBSDACLDefault, TypeFreeBSDACLNFS4)
-	storeGenericAttributeType(TypeIllumosACL)
+	storeGenericAttributeType(TypeIllumosACL, TypeIllumosSystemAttributes)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType
