@@ -53,12 +53,21 @@ const (
 	TypeFreeBSDFileFlags GenericAttributeType = "freebsd.file_flags"
 	// TypeLinuxInodeFlags is the GenericAttributeType used for storing a Linux file's inode flags (FS_IOC_GETFLAGS, as chattr(1) sets them).
 	TypeLinuxInodeFlags GenericAttributeType = "linux.inode_flags"
+	// TypeFreeBSDSystemExtattrs is the GenericAttributeType used for storing a FreeBSD file's extended attributes in the system namespace (the user namespace is in ExtendedAttributes).
+	TypeFreeBSDSystemExtattrs GenericAttributeType = "freebsd.system_extattrs"
+	// TypeFreeBSDACLAccess is the GenericAttributeType used for storing a FreeBSD file's POSIX.1e access ACL, when it has more than the three entries its mode holds.
+	TypeFreeBSDACLAccess GenericAttributeType = "freebsd.acl_access"
+	// TypeFreeBSDACLDefault is the GenericAttributeType used for storing a FreeBSD directory's POSIX.1e default ACL.
+	TypeFreeBSDACLDefault GenericAttributeType = "freebsd.acl_default"
+	// TypeFreeBSDACLNFS4 is the GenericAttributeType used for storing a FreeBSD file's NFSv4 ACL, when it says more than its mode.
+	TypeFreeBSDACLNFS4 GenericAttributeType = "freebsd.acl_nfs4"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
 func init() {
 	storeGenericAttributeType(TypeCreationTime, TypeFileAttributes, TypeSecurityDescriptor)
 	storeGenericAttributeType(TypeFreeBSDFileFlags, TypeLinuxInodeFlags)
+	storeGenericAttributeType(TypeFreeBSDSystemExtattrs, TypeFreeBSDACLAccess, TypeFreeBSDACLDefault, TypeFreeBSDACLNFS4)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

@@ -349,6 +349,15 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 		}
 	}
 
+	// After the mode: chmod rewrites an NFSv4 ACL, and setting an ACL sets
+	// the mode's permission bits from its entries.
+	if err := nodeRestoreACLs(node, path); err != nil {
+		debug.Log("error restoring ACLs for %v: %v", path, err)
+		if firsterr == nil {
+			firsterr = err
+		}
+	}
+
 	return firsterr
 }
 

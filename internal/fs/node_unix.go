@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/restic/restic/internal/data"
+	"github.com/restic/restic/internal/errors"
 )
 
 func lchown(name string, node *data.Node, lookupByName bool) error {
@@ -21,15 +22,17 @@ func lchown(name string, node *data.Node, lookupByName bool) error {
 	return os.Lchown(name, int(uid), int(gid))
 }
 
-// nodeRestoreGenericAttributes is no-op.  File flags, the one generic
-// attribute kept on some Unix systems, are restored later, by the restorer
-// calling RestoreFileFlags.
-func nodeRestoreGenericAttributes(node *data.Node, _ string, warn func(msg string)) error {
-	return data.HandleAllUnknownGenericAttributesFound(node.GenericAttributes, warn)
+// nodeRestoreGenericAttributes restores FreeBSD's system extended attributes.
+// The other generic attributes kept on Unix systems are restored later: ACLs
+// after the mode (nodeRestoreACLs), file flags after everything else, by the
+// restorer calling RestoreFileFlags.
+func nodeRestoreGenericAttributes(node *data.Node, path string, warn func(msg string)) error {
+	return errors.Join(nodeRestoreFreeBSDExtattrs(node, path),
+		data.HandleAllUnknownGenericAttributesFound(node.GenericAttributes, warn))
 }
 
 // nodeFillGenericAttributes records the file's flags, on the systems that
-// keep them.
+// keep them, and on FreeBSD its system extended attributes and ACLs.
 func nodeFillGenericAttributes(node *data.Node, path string, fi *ExtendedFileInfo) error {
-	return nodeFillFileFlags(node, path, fi)
+	return errors.Join(nodeFillFileFlags(node, path, fi), nodeFillFreeBSDAttributes(node, path, fi))
 }
