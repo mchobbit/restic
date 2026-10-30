@@ -87,3 +87,42 @@ func TestNodeFileFlagsMalformed(t *testing.T) {
 			"file flags %s: want a MalformedAttributeError, got %v", raw, err)
 	}
 }
+
+func TestNodeZFSDosFlags(t *testing.T) {
+	var node Node
+	_, ok, err := node.ZFSDosFlags()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "ZFS DOS flags without the attribute")
+
+	// 0 is stored, and read back as a value: archive cleared.
+	node.SetZFSDosFlags(0)
+	buf, err := json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.zfs_dos_flags":0}`, string(buf))
+	var back Node
+	rtest.OK(t, json.Unmarshal(buf, &back.GenericAttributes))
+	flags, ok, err := back.ZFSDosFlags()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok, "ZFS DOS flags 0 lost in JSON")
+	rtest.Equals(t, uint64(0), flags)
+
+	// All the kept flags: a plain JSON number, below 2^53.
+	node.SetZFSDosFlags(0x302f00000000)
+	buf, err = json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.zfs_dos_flags":52978421596160}`, string(buf))
+	rtest.OK(t, json.Unmarshal(buf, &back.GenericAttributes))
+	flags, ok, err = back.ZFSDosFlags()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok, "ZFS DOS flags lost in JSON")
+	rtest.Equals(t, uint64(0x302f00000000), flags)
+
+	for _, raw := range []string{`-1`, `1.5`, `"x"`, `18446744073709551616`} {
+		back.GenericAttributes[TypeLinuxZFSDosFlags] = json.RawMessage(raw)
+		_, ok, err = back.ZFSDosFlags()
+		rtest.Assert(t, !ok, "malformed ZFS DOS flags %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxZFSDosFlags,
+			"ZFS DOS flags %s: want a MalformedAttributeError, got %v", raw, err)
+	}
+}

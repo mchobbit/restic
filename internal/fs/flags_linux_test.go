@@ -140,7 +140,7 @@ func TestRestoreFlagsWith(t *testing.T) {
 	err := restoreFlagsWith("file", data.NodeTypeFile, nodump|badBit, f.ops(false))
 	var unsupported *UnsupportedError
 	rtest.Assert(t, errors.As(err, &unsupported), "no UnsupportedError: %v", err)
-	rtest.Equals(t, uint32(badBit), unsupported.Bits)
+	rtest.Equals(t, uint64(badBit), unsupported.Bits)
 	rtest.Equals(t, uint32(nodump), f.flags)
 }
 

@@ -27,7 +27,8 @@ type Restorer struct {
 	opts Options
 
 	fileList map[string]bool
-	// fileFlags are the files to set file flags on, last; see RestoreTo.
+	// fileFlags are the files to set file flags and ZFS DOS flags on,
+	// last; see RestoreTo.
 	fileFlags []fileFlags
 	// fileFlagsLinked are the hard-linked files among them, by the inode
 	// and device in the snapshot: flags belong to the file, not each name,
@@ -333,8 +334,15 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 		err = res.warnAboutAll(location, err)
 	}
-	if flags, ok := res.nodeFileFlags(node, location); ok && !res.flagsQueued(node) {
-		res.fileFlags = append(res.fileFlags, fileFlags{target, location, node.Type, flags, res.btrfsCompression(node)})
+	flags, hasFlags := res.nodeFileFlags(node, location)
+	dosFlags, hasDosFlags := res.nodeZFSDosFlags(node, location)
+	if (hasFlags || hasDosFlags) && !res.flagsQueued(node) {
+		res.fileFlags = append(res.fileFlags, fileFlags{
+			target: target, location: location, typ: node.Type,
+			flags: flags, hasFlags: hasFlags,
+			dosFlags: dosFlags, hasDosFlags: hasDosFlags,
+			compression: res.btrfsCompression(node),
+		})
 	}
 	return err
 }
@@ -343,6 +351,16 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 // it holds any, warning once about malformed ones (which are none).
 func (res *Restorer) nodeFileFlags(node *data.Node, location string) (uint32, bool) {
 	flags, ok, err := fs.NodeFileFlags(node)
+	if err != nil {
+		res.warnAbout(location, err)
+	}
+	return flags, ok
+}
+
+// nodeZFSDosFlags returns the ZFS DOS flags node holds for this OS, and
+// whether it holds them, warning once about malformed ones (which are none).
+func (res *Restorer) nodeZFSDosFlags(node *data.Node, location string) (uint64, bool) {
+	flags, ok, err := fs.NodeZFSDosFlags(node)
 	if err != nil {
 		res.warnAbout(location, err)
 	}
@@ -478,21 +496,37 @@ func (res *Restorer) flagsQueued(node *data.Node) bool {
 	return false
 }
 
-// fileFlags is a file whose file flags the restorer sets once it has
-// finished with every file.
+// fileFlags is a file whose file flags, ZFS DOS flags or both the restorer
+// sets once it has finished with every file.
 type fileFlags struct {
 	target, location string
 	typ              data.NodeType
 	flags            uint32
+	hasFlags         bool
+	dosFlags         uint64
+	hasDosFlags      bool
 	compression      []byte // btrfs.compression, to set again after the flags
 }
 
 // restoreFileFlags sets the file flags noted while restoring metadata.  They
 // come last: an immutable file refuses new hard links, timestamps and
 // permissions, an immutable directory new entries, and an append-only file
-// its contents.
+// its contents.  ZFS DOS flags go on just before: a readonly file refuses
+// writes, a nounlink one renames, any write sets archive again, and setting
+// them needs no privilege while immutable and append-only don't change.
 func (res *Restorer) restoreFileFlags() error {
 	for _, f := range res.fileFlags {
+		if f.hasDosFlags {
+			debug.Log("restoreZFSDosFlags %v %#x", f.target, f.dosFlags)
+			if err := fs.RestoreZFSDosFlags(f.target, f.typ, f.dosFlags); err != nil {
+				if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {
+					return err
+				}
+			}
+		}
+		if !f.hasFlags {
+			continue
+		}
 		debug.Log("restoreFileFlags %v %#x", f.target, f.flags)
 		if err := fs.RestoreFileFlags(f.target, f.typ, f.flags, f.compression); err != nil {
 			if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {

@@ -75,9 +75,9 @@ func openForFlags(path string, typ data.NodeType, fi *ExtendedFileInfo) (int, er
 }
 
 // nodeFillFileFlags records the inode flags of a regular file or directory,
-// its project ID (attrs_linux.go) and whether a regular file has holes
-// (nodeFillSparse elsewhere), all through one descriptor.  A file that can't
-// be opened has none of them.
+// its project ID (attrs_linux.go), its ZFS DOS flags (dosflags_linux.go) and
+// whether a regular file has holes (nodeFillSparse elsewhere), all through
+// one descriptor.  A file that can't be opened has none of them.
 func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error {
 	if node.Type != data.NodeTypeFile && node.Type != data.NodeTypeDir {
 		return nil
@@ -91,6 +91,7 @@ func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error
 	}
 	defer func() { _ = unix.Close(fd) }()
 	nodeFillProjectID(node, path, fd)
+	nodeFillZFSDosFlags(node, path, fd, fi.DeviceID)
 	if node.Type == data.NodeTypeFile {
 		hole := func() (int64, error) {
 			hole, err := unix.Seek(fd, 0, seekHole)
@@ -228,7 +229,7 @@ func setLateFlags(path string, current, flags uint32, ops inodeFlagOps) error {
 		if err := ops.addXflags(xflags); err != nil {
 			err = &os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err}
 			if unsupportedErr(err) {
-				err = &UnsupportedError{Attr: fileFlagsAttribute, Bits: viaXflags, Err: err}
+				err = &UnsupportedError{Attr: fileFlagsAttribute, Bits: uint64(viaXflags), Err: err}
 			}
 			errs = append(errs, err)
 		}

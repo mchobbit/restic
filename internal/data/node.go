@@ -85,6 +85,8 @@ const (
 	TypeNetBSDACLNFS4 GenericAttributeType = "netbsd.acl_nfs4"
 	// TypeDragonFlyFileFlags is the GenericAttributeType used for storing a DragonFly file's flags (st_flags, as chflags(2) sets them).
 	TypeDragonFlyFileFlags GenericAttributeType = "dragonfly.file_flags"
+	// TypeLinuxZFSDosFlags is the GenericAttributeType used for storing a Linux file's ZFS DOS flags (ZFS_IOC_GETDOSFLAGS: readonly, hidden, system, archive, nounlink, offline, sparse), when they aren't archive alone; 0 is a value.
+	TypeLinuxZFSDosFlags GenericAttributeType = "linux.zfs_dos_flags"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -98,6 +100,7 @@ func init() {
 	storeGenericAttributeType(TypeHaikuAttributes)
 	storeGenericAttributeType(TypeNetBSDFileFlags, TypeNetBSDSystemExtattrs, TypeNetBSDACLAccess, TypeNetBSDACLDefault, TypeNetBSDACLNFS4)
 	storeGenericAttributeType(TypeDragonFlyFileFlags)
+	storeGenericAttributeType(TypeLinuxZFSDosFlags)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

@@ -29,9 +29,10 @@ func lchown(name string, node *data.Node, lookupByName bool) error {
 // nodeRestoreGenericAttributes restores the OS's own attributes that go
 // before the mode (FreeBSD's system extended attributes, Linux's project
 // ID).  The other generic attributes kept on Unix systems are restored
-// later: ACLs after the mode (nodeRestoreACLs), file flags after everything
-// else, by the restorer calling RestoreFileFlags.  unix.sparse only tells
-// the restorer how to write a file's contents.
+// later: ACLs after the mode (nodeRestoreACLs), ZFS DOS flags and file
+// flags after everything else, by the restorer calling RestoreZFSDosFlags
+// and RestoreFileFlags.  unix.sparse only tells the restorer how to write a
+// file's contents.
 func nodeRestoreGenericAttributes(node *data.Node, path string, warn func(msg string)) error {
 	return errors.Join(nodeRestoreOSAttributes(node, path),
 		data.HandleAllUnknownGenericAttributesFound(node.GenericAttributes, warn))

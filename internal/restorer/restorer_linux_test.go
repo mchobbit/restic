@@ -160,9 +160,10 @@ func TestRestorerAttributeWarnings(t *testing.T) {
 		},
 	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
 		malformed: {
-			data.TypeUnixSparse:      json.RawMessage(`"x"`),
-			data.TypeLinuxProjectID:  json.RawMessage(`-1`),
-			data.TypeLinuxInodeFlags: json.RawMessage(`1.5`),
+			data.TypeUnixSparse:       json.RawMessage(`"x"`),
+			data.TypeLinuxProjectID:   json.RawMessage(`-1`),
+			data.TypeLinuxInodeFlags:  json.RawMessage(`1.5`),
+			data.TypeLinuxZFSDosFlags: json.RawMessage(`"x"`),
 		},
 		project: {data.TypeLinuxProjectID: json.RawMessage(`7`)},
 	}))
@@ -183,7 +184,7 @@ func TestRestorerAttributeWarnings(t *testing.T) {
 		}
 		return n
 	}
-	for _, attr := range []string{"ignoring unix.sparse", "ignoring linux.project_id", "ignoring linux.inode_flags"} {
+	for _, attr := range []string{"ignoring unix.sparse", "ignoring linux.project_id", "ignoring linux.inode_flags", "ignoring linux.zfs_dos_flags"} {
 		rtest.Assert(t, count(attr) == 1, "want one warning %q, got %q", attr, warnings)
 	}
 	unsupported := count("linux.project_id not supported")
@@ -192,6 +193,45 @@ func TestRestorerAttributeWarnings(t *testing.T) {
 		return
 	}
 	rtest.Assert(t, unsupported == 2 && count("3 files in all") == 1, "want a warning and a total, got %q", warnings)
+}
+
+// ZFS DOS flags restored onto another file system are a warning once, with
+// the number of files at the end, once per hard-linked file, and the rest of
+// the files' metadata is restored.
+func TestRestorerZFSDosFlagsNotZFS(t *testing.T) {
+	dst := rtest.TempDir(t)
+	var st unix.Statfs_t
+	rtest.OK(t, unix.Statfs(dst, &st))
+	if uint32(st.Type) == 0x2fc12fc1 {
+		t.Skip("the temporary directory is on ZFS")
+	}
+	hidden := &FileAttributes{}
+	cleared := &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"h1":  File{Data: "data", attributes: hidden, Mode: 0o640},
+			"h2":  File{Data: "data", attributes: hidden, Inode: 7, Links: 2},
+			"h2b": File{Data: "data", attributes: hidden, Inode: 7, Links: 2},
+			"c":   File{Data: "data", attributes: cleared},
+			"d":   Dir{attributes: hidden},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		hidden:  {data.TypeLinuxZFSDosFlags: json.RawMessage(`8589934592`)},
+		cleared: {data.TypeLinuxZFSDosFlags: json.RawMessage(`0`)},
+	}))
+
+	res := NewRestorer(repo, sn, Options{})
+	var warnings []string
+	res.Warn = func(msg string) { warnings = append(warnings, msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	rtest.Equals(t, 2, len(warnings))
+	rtest.Assert(t, strings.Contains(warnings[0], "linux.zfs_dos_flags not supported by the target file system: not ZFS"), "want a not ZFS warning, got %q", warnings)
+	rtest.Assert(t, strings.Contains(warnings[1], "4 files in all"), "want a total of 4 files, got %q", warnings)
+	fi, err := os.Stat(filepath.Join(dst, "h1"))
+	rtest.OK(t, err)
+	rtest.Equals(t, os.FileMode(0o640), fi.Mode().Perm())
 }
 
 // With root, on a loop ext4 with casefolding and project IDs: a casefolded

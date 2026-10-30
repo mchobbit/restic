@@ -1,9 +1,10 @@
 package data
 
 // MalformedAttributeError is a BackOtter attribute (file flags,
-// linux.project_id, unix.sparse) whose value can't be decoded.  The restorer
-// warns about it once per attribute and skips it: a snapshot that another
-// build wrote oddly still restores, with everything else in it.
+// linux.project_id, linux.zfs_dos_flags, unix.sparse) whose value can't be
+// decoded.  The restorer warns about it once per attribute and skips it: a
+// snapshot that another build wrote oddly still restores, with everything
+// else in it.
 type MalformedAttributeError struct {
 	Attr GenericAttributeType
 	Err  error
@@ -57,5 +58,24 @@ func (node *Node) SetProjectID(id uint32) {
 	}
 	if err := node.SetGenericAttribute(TypeLinuxProjectID, id); err != nil {
 		panic(err) // a uint32 always marshals
+	}
+}
+
+// ZFSDosFlags returns node's ZFS DOS flags (TypeLinuxZFSDosFlags), and
+// whether it has them.  Unlike file flags, 0 is a value to restore: a file
+// whose archive flag was cleared.
+func (node *Node) ZFSDosFlags() (flags uint64, ok bool, err error) {
+	ok, err = node.GenericAttribute(TypeLinuxZFSDosFlags, &flags)
+	if err != nil {
+		return 0, false, &MalformedAttributeError{Attr: TypeLinuxZFSDosFlags, Err: err}
+	}
+	return flags, ok, nil
+}
+
+// SetZFSDosFlags stores ZFS DOS flags, 0 included.  Which files get them is
+// up to the caller: those whose flags aren't archive alone.
+func (node *Node) SetZFSDosFlags(flags uint64) {
+	if err := node.SetGenericAttribute(TypeLinuxZFSDosFlags, flags); err != nil {
+		panic(err) // a uint64 always marshals
 	}
 }

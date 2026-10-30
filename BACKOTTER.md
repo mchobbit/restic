@@ -36,6 +36,16 @@ new restic release rather than merged.
     (`noscache`, `nohistory` and the rest; DragonFly has no ACLs or
     extended attributes).
   - `linux.project_id`: a file's project ID (`chattr -p`), when it isn't 0.
+  - `linux.zfs_dos_flags`: the DOS flags OpenZFS keeps on Linux
+    (`ZFS_IOC_GETDOSFLAGS`), as a number: readonly, hidden, system,
+    archive, nounlink, offline and sparse (mask `0x302f00000000`).
+    Immutable, append-only and nodump are in `linux.inode_flags` already;
+    reparse can't be set on Linux.  Only on ZFS (statfs's `f_type`
+    `0x2fc12fc1`; the ioctl numbers may mean something else to another
+    file system), for regular files and directories, and only when they
+    aren't archive alone, which ZFS gives every file it creates or writes
+    to; archive cleared is kept, as 0.  FreeBSD (`freebsd.file_flags`) and
+    illumos (`illumos.system_attributes`) hold the same flags already.
   - `unix.sparse`: `true` on a regular file that had holes.
   A file only gets an attribute when it has something the mode doesn't say
   (flags, a non-trivial ACL, a project ID, holes), so trees of ordinary
@@ -45,9 +55,15 @@ new restic release rather than merged.
 - On restore, ACLs are set after the mode, which rewrites NFSv4 ACLs, and
   flags after everything else (contents, hard links, ownership, xattrs,
   timestamps, mode, ACLs), once per hard-linked file, since an immutable or
-  append-only file refuses most of those.  btrfs's no-copy-on-write flag
-  goes on while a new file is still empty: btrfs ignores it on one with
-  data.  Where the target file system doesn't support a flag, the
+  append-only file refuses most of those.  ZFS DOS flags go on just before
+  the inode flags: a readonly file refuses writes, a nounlink one renames,
+  and any write sets archive again.  `ZFS_IOC_SETDOSFLAGS` replaces the
+  whole mask, so restic reads the file's flags and changes only the kept
+  ones, leaving immutable, append-only and nodump to the inode flags; an
+  owner may set every kept one.  Restored onto another file system than
+  ZFS, they get one warning per restore, with the number of files.
+  btrfs's no-copy-on-write flag goes on while a new file is still empty:
+  btrfs ignores it on one with data.  Where the target file system doesn't support a flag, the
   others are still set and restic warns about that one (S10 below).  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
@@ -171,15 +187,16 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   can't be opened for `FS_IOC_FSGETXATTR` without following them or side
   effects (Linux 6.17's `file_getattr(2)` could, but is too new to rely on).
 - **S9 Malformed values.**  A value of `linux.inode_flags`,
-  `linux.project_id`, `unix.sparse` or a `*.file_flags` attribute that can't
-  be decoded gets one warning per attribute per restore, and is ignored.  It
-  is not an error.
+  `linux.project_id`, `linux.zfs_dos_flags`, `unix.sparse` or a
+  `*.file_flags` attribute that can't be decoded gets one warning per
+  attribute per restore, and is ignored.  It is not an error.
 - **S10 Unsupported versus failed.**  When the target file system refuses an
-  inode flag, file flag, F or project ID with `ENOTTY`,
-  `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), restic warns once per
-  attribute and refused bits, naming the first file, and gives the number
-  of files at the end; the restore still exits 0.  On FreeBSD, OpenBSD,
-  NetBSD, DragonFly and illumos the same goes for their file flags.  Any
+  inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
+  `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS
+  DOS flags, restic warns once per attribute and refused bits, naming the
+  first file, and gives the number of files at the end; the restore still
+  exits 0.  On FreeBSD, OpenBSD, NetBSD, DragonFly and illumos the same
+  goes for their file flags.  Any
   other failure (`EPERM`, `EDQUOT`, `EIO`, ...) is an error, and restic
   exits 1, while rustic-bko only warns about it and exits 0 (upstream
   rustic's design).  That is the one exit-status difference left between

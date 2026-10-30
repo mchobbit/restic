@@ -69,19 +69,51 @@ func RestoreFileFlags(path string, typ data.NodeType, flags uint32, compression 
 	return restoreFileFlags(path, typ, flags, compression)
 }
 
+// NodeZFSDosFlags returns the ZFS DOS flags node holds, and whether it holds
+// them: on Linux, linux.zfs_dos_flags; elsewhere none.  Malformed flags are
+// none, with a data.MalformedAttributeError for the restorer to warn about.
+func NodeZFSDosFlags(node *data.Node) (uint64, bool, error) {
+	if zfsDosFlagsAttribute == "" {
+		return 0, false, nil
+	}
+	return node.ZFSDosFlags()
+}
+
+// RestoreZFSDosFlags sets the ZFS DOS flags of the file at path, which has
+// type typ, to flags, leaving the others (immutable, append-only and nodump,
+// which are inode flags) as they are.  The restorer calls it in its last
+// pass, before RestoreFileFlags.  A file system that isn't ZFS gives an
+// *UnsupportedError, as do flags it refuses as unsupported.
+func RestoreZFSDosFlags(path string, typ data.NodeType, flags uint64) error {
+	return restoreZFSDosFlags(path, typ, flags)
+}
+
 // setFlagsBestEffort calls set with want.  If that fails, it sets as many of
 // want's bits as set accepts, one at a time, and returns an error naming the
 // bits it refused.  When every refusal says the file system doesn't support
 // a bit (unsupportedErr), that is an *UnsupportedError wrapping set's first
 // error; otherwise the error wraps the first other refusal.
 func setFlagsBestEffort(want uint32, set func(uint32) error) error {
+	return setBitsBestEffort(fileFlagsAttribute, "file flags", want, set)
+}
+
+// setBitsBestEffort is setFlagsBestEffort for the flags in attr, what in
+// error messages, of either width.
+func setBitsBestEffort[T uint32 | uint64](attr data.GenericAttributeType, what string, want T, set func(T) error) error {
 	firstErr := set(want)
 	if firstErr == nil {
 		return nil
 	}
-	var got, refused uint32
+	if want == 0 {
+		// Clearing them failed, and there is no bit to try alone.
+		if unsupportedErr(firstErr) {
+			return &UnsupportedError{Attr: attr, Err: firstErr}
+		}
+		return fmt.Errorf("%v not cleared: %w", what, firstErr)
+	}
+	var got, refused T
 	var failed error
-	for bit := uint32(1); bit != 0; bit <<= 1 {
+	for bit := T(1); bit != 0; bit <<= 1 {
 		if want&bit == 0 {
 			continue
 		}
@@ -102,7 +134,7 @@ func setFlagsBestEffort(want uint32, set func(uint32) error) error {
 		return nil
 	}
 	if failed == nil {
-		return &UnsupportedError{Attr: fileFlagsAttribute, Bits: refused, Err: firstErr}
+		return &UnsupportedError{Attr: attr, Bits: uint64(refused), Err: firstErr}
 	}
-	return fmt.Errorf("file flags %#x of %#x not set: %w", refused, want, failed)
+	return fmt.Errorf("%v %#x of %#x not set: %w", what, refused, want, failed)
 }
