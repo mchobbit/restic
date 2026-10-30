@@ -400,6 +400,25 @@ func (res *Restorer) ensureDir(target string) error {
 	return fs.MkdirAll(target, 0700)
 }
 
+// ensureDirWithFlags is ensureDir for a directory with file flags.  When it
+// creates the directory, it sets those flags that a file system only takes
+// on an empty directory (casefolding) at once, before anything goes in; the
+// others are set last, with restoreFileFlags.
+func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
+	if res.opts.DryRun {
+		return nil
+	}
+	_, err := fs.Lstat(target)
+	created := errors.Is(err, os.ErrNotExist)
+	if err := res.ensureDir(target); err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+	return fs.PrepareDirForFlags(target, flags)
+}
+
 // RestoreTo creates the directories and files in the snapshot below dst.
 // Before an item is created, res.Filter is called.
 func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) {
@@ -432,10 +451,15 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 
 	// first tree pass: create directories and collect all files to restore
 	err = res.traverseTree(ctx, dst, *res.sn.Tree, treeVisitor{
-		enterDir: func(_ *data.Node, target, location string) error {
+		enterDir: func(node *data.Node, target, location string) error {
 			debug.Log("first pass, enterDir: mkdir %q, leaveDir should restore metadata", location)
 			if location != string(filepath.Separator) {
 				res.opts.Progress.AddFile(0)
+			}
+			if node != nil {
+				if flags, ok := fs.NodeFileFlags(node); ok {
+					return res.ensureDirWithFlags(target, flags)
+				}
 			}
 			return res.ensureDir(target)
 		},
@@ -476,7 +500,7 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 								}
 							}
 						}
-						filerestorer.addFile(location, node.Content, int64(node.Size), matches)
+						filerestorer.addFile(location, node.Content, int64(node.Size), matches, node.Sparse())
 					} else {
 						action := restoreui.ActionFileUpdated
 						if matches == nil {

@@ -38,6 +38,17 @@ func PrepareFileForFlags(path string, flags uint32) error {
 	return prepareFileForFlags(path, flags&flagsBeforeData)
 }
 
+// PrepareDirForFlags gives the directory at path, which the restorer has just
+// created, those of flags that a file system only takes while a directory is
+// empty (casefolding on ext4 and f2fs), before anything goes in.  It does
+// nothing when there are none.
+func PrepareDirForFlags(path string, flags uint32) error {
+	if flags&dirFlagsBeforeEntries == 0 {
+		return nil
+	}
+	return prepareDirForFlags(path, flags&dirFlagsBeforeEntries)
+}
+
 // RestoreFileFlags sets the file flags of the file at path, which has type
 // typ, to flags.  Flags the file system doesn't support are left out, and
 // reported in the error.

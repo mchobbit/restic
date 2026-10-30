@@ -14,8 +14,10 @@ import (
 const fileFlagsAttribute = data.TypeLinuxInodeFlags
 
 // From <linux/fs.h>: the inode flags chattr(1) sets, s u c S i a d A m j t D T
-// C P.  The rest belong to the file system (extents, inline data, ...) or
-// need more than setting (DAX, casefolding, verity, encryption).
+// C P F.  The rest belong to the file system (extents, inline data, ...) or
+// need more than setting (DAX, verity, encryption).  Casefolding (F) goes
+// on as the restorer creates a directory, since ext4 and f2fs only take it
+// on an empty one.
 const linuxInodeFlags = 0x00000001 | // FS_SECRM_FL        s
 	0x00000002 | // FS_UNRM_FL         u
 	0x00000004 | // FS_COMPR_FL        c
@@ -30,7 +32,8 @@ const linuxInodeFlags = 0x00000001 | // FS_SECRM_FL        s
 	0x00010000 | // FS_DIRSYNC_FL      D
 	0x00020000 | // FS_TOPDIR_FL       T
 	0x00800000 | // FS_NOCOW_FL        C
-	0x20000000 //   FS_PROJINHERIT_FL  P
+	0x20000000 | // FS_PROJINHERIT_FL  P
+	0x40000000 //   FS_CASEFOLD_FL     F
 
 // openForFlags opens a regular file or directory for FS_IOC_GETFLAGS and
 // FS_IOC_SETFLAGS, as lsattr(1) and chattr(1) do.  Other types of file have
@@ -63,6 +66,8 @@ func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error 
 		return nil
 	}
 	defer func() { _ = unix.Close(fd) }()
+	// The project ID comes through the same descriptor (attrs_linux.go).
+	nodeFillProjectID(node, path, fd)
 	flags, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {
 		// A file system without inode flags (ENOTTY, EOPNOTSUPP, ...).
@@ -71,6 +76,12 @@ func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error 
 	}
 	node.SetFileFlags(fileFlagsAttribute, flags&linuxInodeFlags)
 	return nil
+}
+
+// mergeInodeFlags returns current, the flags a file has, with the kept ones
+// replaced by those in flags: the file system's own stay as they are.
+func mergeInodeFlags(current, flags uint32) uint32 {
+	return current&^linuxInodeFlags | flags&linuxInodeFlags
 }
 
 func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
@@ -82,6 +93,12 @@ func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
 	current, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {
 		return &os.PathError{Op: "FS_IOC_GETFLAGS", Path: path, Err: err}
+	}
+	// On btrfs every FS_IOC_SETFLAGS rewrites the btrfs.compression
+	// property, restored before as an extended attribute, or for "no"
+	// deletes it: leave flags that are right already alone.
+	if mergeInodeFlags(current, flags) == current {
+		return nil
 	}
 	// Keep the file system's own flags as they are.
 	own := current &^ linuxInodeFlags
@@ -98,6 +115,11 @@ func restoreFileFlags(path string, typ data.NodeType, flags uint32) error {
 // empty: btrfs ignores FS_NOCOW_FL on a file with data, without an error.
 const flagsBeforeData = 0x00800000 // FS_NOCOW_FL
 
+// dirFlagsBeforeEntries are the flags a file system only takes while a
+// directory is empty: ext4 and f2fs refuse FS_CASEFOLD_FL on one with
+// entries (ENOTEMPTY).
+const dirFlagsBeforeEntries = 0x40000000 // FS_CASEFOLD_FL
+
 func prepareFileForFlags(path string, flags uint32) error {
 	fd, err := unix.Open(path, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if errors.Is(err, unix.EEXIST) {
@@ -107,12 +129,31 @@ func prepareFileForFlags(path string, flags uint32) error {
 		return &os.PathError{Op: "create", Path: path, Err: err}
 	}
 	defer func() { _ = unix.Close(fd) }()
+	return addFlagsEarly(fd, path, flags)
+}
+
+func prepareDirForFlags(path string, flags uint32) error {
+	fd, err := openForFlags(path, data.NodeTypeDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return addFlagsEarly(fd, path, flags)
+}
+
+// addFlagsEarly adds flags to those of the empty file or directory open as
+// fd.  Where the file system doesn't support them, restoreFileFlags reports
+// that at the end.
+func addFlagsEarly(fd int, path string, flags uint32) error {
 	current, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS)
 	if err != nil {
 		if unsupportedFlags(err) {
-			return nil // no inode flags here; restoreFileFlags reports it
+			return nil // no inode flags here
 		}
 		return &os.PathError{Op: "FS_IOC_GETFLAGS", Path: path, Err: err}
+	}
+	if current|flags == current {
+		return nil // inherited from the parent directory
 	}
 	if err := unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, int(current|flags)); err != nil {
 		if unsupportedFlags(err) {

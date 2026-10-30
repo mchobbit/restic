@@ -1,11 +1,11 @@
-//go:build !freebsd && !illumos
+//go:build !freebsd && !illumos && !linux
 
 package fs
 
 import "github.com/restic/restic/internal/data"
 
-// The ACLs and other attributes kept on FreeBSD (attrs_freebsd.go) and
-// illumos (attrs_illumos.go) have no counterpart here.
+// The ACLs and other attributes kept on FreeBSD (attrs_freebsd.go), illumos
+// (attrs_illumos.go) and Linux (attrs_linux.go) have no counterpart here.
 
 //nolint:unused // not used on Windows
 func nodeFillOSAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
@@ -21,7 +21,7 @@ func nodeRestoreACLs(_ *data.Node, _ string) error {
 	return nil
 }
 
-// A symlink's own permissions don't matter elsewhere (Linux has none).
+// A symlink's own permissions don't matter elsewhere.
 func nodeRestoreSymlinkMode(_ *data.Node, _ string) error {
 	return nil
 }

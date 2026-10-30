@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/restic/chunker"
 	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/feature"
 	"github.com/restic/restic/internal/restic"
@@ -373,4 +374,43 @@ func TestFatalDownloadError(t *testing.T) {
 
 	rtest.Assert(t, len(errors) == 1, "unexpected number of restore errors, expected: 1, got: %v", len(errors))
 	rtest.Assert(t, errors[0] == "file2", "expected error for file2, got: %v", errors[0])
+}
+
+// A file marked as having had holes (data.TypeUnixSparse) is written sparse
+// as with --sparse, where --sparse would write it sparse; other files are
+// fully allocated unless --sparse is given.
+func TestFileRestorerSparseMarker(t *testing.T) {
+	zeros := string(make([]byte, chunker.MinSize))
+	withZeros := []TestBlob{{"data", "pack1"}, {zeros, "pack1"}, {"end", "pack1"}}
+	noZeros := []TestBlob{{"data", "pack1"}, {"more data", "pack1"}}
+	single := []TestBlob{{"data", "pack1"}}
+
+	for _, test := range []struct {
+		name          string
+		blobs         []TestBlob
+		holes, sparse bool
+		want          bool
+	}{
+		{"zero chunk, marked", withZeros, true, false, true},
+		{"zero chunk, unmarked", withZeros, false, false, false},
+		{"zero chunk, --sparse", withZeros, false, true, true},
+		{"no zero chunk, marked", noZeros, true, false, false},
+		{"single blob, marked", single, true, false, true},
+		{"single blob, unmarked", single, false, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newTestRepo([]TestFile{{name: "file", blobs: test.blobs}})
+			r := newFileRestorer(rtest.TempDir(t), repo.loader, repo.Lookup, 2, test.sparse, false, repo.StartWarmup, nil)
+			for _, file := range repo.files {
+				r.addFile(file.location, file.blobs.(restic.IDs), int64(len(repo.fileContent(file))), nil, test.holes)
+			}
+			files := r.files
+
+			rtest.OK(t, r.restoreFiles(context.TODO()))
+			rtest.Equals(t, test.want, files[0].sparse)
+			content, err := os.ReadFile(r.targetPath(files[0].location))
+			rtest.OK(t, err)
+			rtest.Equals(t, repo.fileContent(files[0]), string(content))
+		})
+	}
 }

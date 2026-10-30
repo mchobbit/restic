@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/restic/chunker"
 	"github.com/restic/restic/internal/archiver"
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/errors"
@@ -1034,6 +1035,46 @@ func TestRestorerSparseOverwrite(t *testing.T) {
 
 	opts := Options{Sparse: true, Overwrite: OverwriteAlways}
 	saveSnapshotsAndOverwrite(t, baseSnapshot, sparseSnapshot, opts, opts)
+}
+
+// Without --sparse, a file backed up with holes (unix.sparse) comes back
+// sparse, and the same file without the marker fully allocated, as a swap
+// file or a preallocated one needs.
+func TestRestorerSparseMarker(t *testing.T) {
+	zeros := string(make([]byte, chunker.MinSize))
+	content := "start" + zeros + zeros + "end"
+	snapshot := Snapshot{
+		Nodes: map[string]Node{
+			"file": File{DataParts: []string{"start", zeros, zeros, "end"}},
+		},
+	}
+	markSparse := func(_ *FileAttributes, _ bool) map[data.GenericAttributeType]json.RawMessage {
+		return map[data.GenericAttributeType]json.RawMessage{data.TypeUnixSparse: json.RawMessage(`true`)}
+	}
+
+	var blocks [2]int64
+	for i, getGenericAttributes := range []func(*FileAttributes, bool) map[data.GenericAttributeType]json.RawMessage{
+		noopGetGenericAttributes, markSparse,
+	} {
+		repo := repository.TestRepository(t)
+		sn, _ := saveSnapshot(t, repo, snapshot, getGenericAttributes)
+		res := NewRestorer(repo, sn, Options{})
+		tempdir := rtest.TempDir(t)
+		_, err := res.RestoreTo(context.TODO(), tempdir)
+		rtest.OK(t, err)
+
+		filename := filepath.Join(tempdir, "file")
+		restored, err := os.ReadFile(filename)
+		rtest.OK(t, err)
+		rtest.Assert(t, string(restored) == content, "wrong content restored")
+		blocks[i] = getBlockCount(t, filename)
+	}
+
+	t.Logf("%d bytes restored as %d blocks without the marker, %d with it", len(content), blocks[0], blocks[1])
+	if blocks[0] < 0 || blocks[0]*512 < int64(len(content)) {
+		return // a file system that compresses or drops zeros itself
+	}
+	rtest.Assert(t, blocks[1] < blocks[0], "file with unix.sparse not restored sparse")
 }
 
 type printerMock struct {

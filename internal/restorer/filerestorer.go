@@ -25,6 +25,7 @@ type fileInfo struct {
 	lock       sync.Mutex
 	inProgress bool
 	sparse     bool
+	holes      bool // the file had holes when backed up (data.TypeUnixSparse)
 	size       int64
 	location   string      // file on local filesystem relative to restorer basedir
 	blobs      interface{} // blobs of the file
@@ -94,8 +95,11 @@ func newFileRestorer(dst string,
 	}
 }
 
-func (r *fileRestorer) addFile(location string, content restic.IDs, size int64, state *fileState) {
-	r.files = append(r.files, &fileInfo{location: location, blobs: content, size: size, state: state})
+// addFile adds a file to restore.  holes says it had holes when it was backed
+// up: it is written sparse, as all files are with --sparse, while other
+// files are fully allocated, zeros and all.
+func (r *fileRestorer) addFile(location string, content restic.IDs, size int64, state *fileState, holes bool) {
+	r.files = append(r.files, &fileInfo{location: location, blobs: content, size: size, state: state, holes: holes})
 }
 
 func (r *fileRestorer) targetPath(location string) string {
@@ -137,6 +141,7 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 
 		fileBlobs := file.blobs.(restic.IDs)
 		largeFile := len(fileBlobs) > largeFileBlobCount
+		sparse := r.sparse || file.holes
 		var packsMap map[restic.ID][]fileBlobInfo
 		if largeFile {
 			packsMap = make(map[restic.ID][]fileBlobInfo)
@@ -165,7 +170,7 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 			}
 			pack.files[file] = struct{}{}
 			if blob.ID.Equal(r.zeroChunk) {
-				file.sparse = r.sparse
+				file.sparse = sparse
 			}
 		})
 		if err != nil {
@@ -176,7 +181,7 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 		if len(fileBlobs) == 1 {
 			// no need to preallocate files with a single block, thus we can always consider them to be sparse
 			// in addition, a short chunk will never match r.zeroChunk which would prevent sparseness for short files
-			file.sparse = r.sparse
+			file.sparse = sparse
 		}
 		if file.state != nil {
 			// The restorer currently cannot punch new holes into an existing files.

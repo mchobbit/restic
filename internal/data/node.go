@@ -67,6 +67,10 @@ const (
 	TypeIllumosSystemAttributes GenericAttributeType = "illumos.system_attributes"
 	// TypeOpenBSDFileFlags is the GenericAttributeType used for storing an OpenBSD file's flags (st_flags, as chflags(2) sets them).
 	TypeOpenBSDFileFlags GenericAttributeType = "openbsd.file_flags"
+	// TypeLinuxProjectID is the GenericAttributeType used for storing a Linux file's project ID (FS_IOC_FSGETXATTR's fsx_projid, as chattr -p sets it), when it isn't 0.
+	TypeLinuxProjectID GenericAttributeType = "linux.project_id"
+	// TypeUnixSparse is the GenericAttributeType used for marking a regular file that had holes (true), which a restore writes sparse again.
+	TypeUnixSparse GenericAttributeType = "unix.sparse"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -76,6 +80,7 @@ func init() {
 	storeGenericAttributeType(TypeFreeBSDSystemExtattrs, TypeFreeBSDACLAccess, TypeFreeBSDACLDefault, TypeFreeBSDACLNFS4)
 	storeGenericAttributeType(TypeIllumosACL, TypeIllumosSystemAttributes)
 	storeGenericAttributeType(TypeOpenBSDFileFlags)
+	storeGenericAttributeType(TypeLinuxProjectID, TypeUnixSparse)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType
