@@ -1,12 +1,16 @@
 package data
 
-import "time"
+import (
+	"time"
+
+	"github.com/restic/restic/internal/restic"
+)
 
 // MalformedAttributeError is a BackOtter attribute (file flags,
-// linux.project_id, linux.zfs_dos_flags, unix.sparse, unix.birthtime) whose
-// value can't be decoded.  The restorer warns about it once per attribute and skips it: a
-// snapshot that another build wrote oddly still restores, with everything
-// else in it.
+// linux.project_id, linux.zfs_dos_flags, unix.sparse, unix.birthtime,
+// illumos.unread_size) whose value can't be decoded.  The restorer warns
+// about it once per attribute and skips it: a snapshot that another build
+// wrote oddly still restores, with everything else in it.
 type MalformedAttributeError struct {
 	Attr GenericAttributeType
 	Err  error
@@ -103,4 +107,27 @@ func (node *Node) SetBirthTime(birth time.Time) {
 	}
 	// A year past 9999, which JSON can't hold, is no birth time to keep.
 	_ = node.SetGenericAttribute(TypeUnixBirthTime, birth.UTC())
+}
+
+// UnreadSize returns the size of node's file when it was backed up without
+// its contents (TypeIllumosUnreadSize), and whether it was.
+func (node *Node) UnreadSize() (size uint64, ok bool, err error) {
+	ok, err = node.GenericAttribute(TypeIllumosUnreadSize, &size)
+	if err != nil {
+		return 0, false, &MalformedAttributeError{Attr: TypeIllumosUnreadSize, Err: err}
+	}
+	return size, ok, nil
+}
+
+// SetUnread makes node, a regular file of size bytes, one whose contents
+// weren't backed up: no content, size 0, and TypeIllumosUnreadSize with its
+// size, so that a restore creates it empty and says so.  It has no holes to
+// mark either.
+func (node *Node) SetUnread(size uint64) {
+	node.Content = restic.IDs{}
+	node.Size = 0
+	delete(node.GenericAttributes, TypeUnixSparse)
+	if err := node.SetGenericAttribute(TypeIllumosUnreadSize, size); err != nil {
+		panic(err) // a uint64 always marshals
+	}
 }

@@ -47,7 +47,11 @@ new restic release rather than merged.
     changes the attributes that differ one at a time, from what the file
     has, and names those refused: hidden and archive still come back
     beside an immutable a non-root restore can't set, and archive is
-    cleared where av_modified can't be.
+    cleared where av_modified can't be.  The view of a file that can't be
+    opened (`EACCES`: root too, with av_quarantined) is reached through
+    its attribute directory alone, as `ls -/` and `chmod S` reach it
+    (libc's `__openattrdirat`, which `getattrat(3C)` uses), at backup and
+    restore.
   - `illumos.xattr_meta`: the owner, group, mode, times and ACL of each of
     a file's extended attributes (attribute files, `runat(1)`), by name:
     `{"note":{"uid":1500,"gid":1501,"mode":416,"mtime":"2001-09-09T01:46:40.123456789Z","atime":"2001-09-09T01:46:40Z","acl":[...]}}`,
@@ -61,6 +65,10 @@ new restic release rather than merged.
     down (`zfs project -p 77 -s`), as `{"id":77,"inherit":true}`
     (`"inherit"` left out when false), when it has either; regular files
     and directories.
+  - `illumos.unread_size`: on a regular file whose contents weren't backed
+    up, because av_quarantined kept it closed (below), the size it had
+    then, in bytes, as a number (`1234`); the node itself has size 0 and no
+    content.
   - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
   - `netbsd.file_flags`: NetBSD's `chflags(1)` flags, but those the kernel
     manages (`SF_SNAPSHOT`, `SF_SNAPINVAL`, and `SF_LOG`, which marks the
@@ -156,11 +164,30 @@ new restic release rather than merged.
   are written; an attribute the restore left out is left alone.  This goes
   before the file's own times (writing an attribute file leaves them) and
   flags.  A snapshot without the attribute restores as before.
-- A file with illumos' `av_quarantined` system attribute can't be opened,
-  by root either (`EACCES`), so its contents can't be read: the backup
-  reports an error for it and leaves it out, node and attributes too, and
-  exits 3 (rustic-bko warns and exits 0, as with any file it can't read).
-  To back one up, clear the attribute first (`chmod S-vav_quarantined`).
+- A file with illumos' `av_quarantined` system attribute can't be opened
+  for reading, by root either (`EACCES`), nor can its attribute directory
+  through it; stat, the system attributes (above) and the ACL still can.
+  So when opening a regular file for its contents fails with `EACCES` and
+  its system attributes have av_quarantined, the backup keeps its node
+  without them: mode, owner, times, links, inode, device, SID owners, ACL,
+  `illumos.system_attributes` (av_quarantined set) and creation time as
+  for any file, no content, size 0, and `illumos.unread_size` with its
+  real size.  Its extended attributes and `illumos.xattr_meta` can't be
+  read (`EACCES`) and are left out, and so is its ZFS project (read through
+  a descriptor of the file).  The backup warns once for the file,
+  "PATH: av_quarantined: contents not backed up (N bytes)", and still
+  exits 0 (an `fs.BackupWarning`); the attribute is never touched.  Any
+  other failure to open a file is an error as before.  A file whose node
+  has `illumos.unread_size` is never taken as unchanged from a parent
+  snapshot: the next backup tries its contents again.  A restore creates
+  such a file empty, a new one in place of any file there that isn't empty
+  already (that may be quarantined, and can't be read or have its extended
+  attributes listed), restores everything else as for any file, the system
+  attributes last as always, so that it ends quarantined again, and warns
+  once for it, "PATH: contents were not backed up (av_quarantined at
+  backup, N bytes)"; that is not an error.  On another OS it is the same
+  empty file and warning.  Older restic and stock restic warn once about
+  the unknown attribute and restore the empty file.
 - illumos ZFS project IDs are restored with the extended attributes'
   metadata, before the flags, as each node's own ID and inheritance,
   whatever a file got from the directory it was created in; on another file
@@ -346,7 +373,8 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   `unix.birthtime` or a `*.file_flags` attribute that can't be decoded gets
   one warning per attribute per restore, and is ignored.  It is not an
   error.  (restic does the same for `illumos.owner_sid`,
-  `illumos.group_sid`, `illumos.xattr_meta` and `illumos.zfs_project`.)
+  `illumos.group_sid`, `illumos.xattr_meta`, `illumos.zfs_project` and
+  `illumos.unread_size`.)
 - **S10 Unsupported versus failed.**  When the target file system refuses an
   inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
   `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS

@@ -1077,6 +1077,60 @@ func TestRestorerSparseMarker(t *testing.T) {
 	rtest.Assert(t, blocks[1] < blocks[0], "file with unix.sparse not restored sparse")
 }
 
+// A file backed up without its contents (illumos.unread_size: av_quarantined
+// kept it closed) comes back empty, with a warning, and no error.
+func TestRestorerUnread(t *testing.T) {
+	snapshot := Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{Nodes: map[string]Node{
+				"file": File{Data: ""},
+			}},
+		},
+	}
+	markUnread := func(_ *FileAttributes, isDir bool) map[data.GenericAttributeType]json.RawMessage {
+		if isDir {
+			return nil
+		}
+		return map[data.GenericAttributeType]json.RawMessage{data.TypeIllumosUnreadSize: json.RawMessage(`1234`)}
+	}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, snapshot, markUnread)
+	res := NewRestorer(repo, sn, Options{})
+	var warnings []string
+	res.Warn = func(message string) {
+		warnings = append(warnings, message)
+	}
+	res.Error = func(location string, err error) error {
+		t.Errorf("restore error for %v: %v", location, err)
+		return nil
+	}
+	tempdir := rtest.TempDir(t)
+	_, err := res.RestoreTo(context.TODO(), tempdir)
+	rtest.OK(t, err)
+
+	filename := filepath.Join(tempdir, "dir", "file")
+	restored, err := os.ReadFile(filename)
+	rtest.OK(t, err)
+	rtest.Equals(t, 0, len(restored))
+	warning := "/dir/file: contents were not backed up (av_quarantined at backup, 1234 bytes)"
+	rtest.Equals(t, []string{warning}, warnings)
+
+	// Over a file with contents, it goes into a new, empty file.
+	// Another name keeps the old one apart.
+	rtest.OK(t, os.WriteFile(filename, []byte("stale"), 0o600))
+	old := filepath.Join(tempdir, "old")
+	rtest.OK(t, os.Link(filename, old))
+	_, err = res.RestoreTo(context.TODO(), tempdir)
+	rtest.OK(t, err)
+	restored, err = os.ReadFile(filename)
+	rtest.OK(t, err)
+	rtest.Equals(t, 0, len(restored))
+	restored, err = os.ReadFile(old)
+	rtest.OK(t, err)
+	rtest.Equals(t, "stale", string(restored))
+	rtest.Equals(t, []string{warning, warning}, warnings)
+}
+
 type printerMock struct {
 	s restoreui.State
 	progress.NoopPrinter

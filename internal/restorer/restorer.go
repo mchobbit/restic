@@ -393,6 +393,23 @@ func (res *Restorer) btrfsCompression(node *data.Node) []byte {
 	return nil
 }
 
+// warnUnread warns that node, a regular file restored at location, is
+// restored empty when the backup couldn't read its contents (av_quarantined
+// kept the file closed), with their size then, and tells whether it is.
+// Not an error: the file comes back as it was otherwise, its system
+// attributes, av_quarantined among them, last as always.
+func (res *Restorer) warnUnread(node *data.Node, location string) bool {
+	size, ok, err := node.UnreadSize()
+	if err != nil {
+		res.warnAbout(location, err)
+		return false
+	}
+	if ok {
+		res.warn(fmt.Sprintf("%v: contents were not backed up (av_quarantined at backup, %d bytes)", location, size))
+	}
+	return ok
+}
+
 // onceWarning is a warning given once per restore: its text without the
 // path, the location it was given for, and how often it came up (when that
 // is counted).
@@ -719,6 +736,7 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 
 			sparse := res.nodeSparse(node, location)
 			buf, err = res.withOverwriteCheck(ctx, node, target, location, false, buf, func(updateMetadataOnly bool, matches *fileState) error {
+				unread := res.warnUnread(node, location)
 				if updateMetadataOnly {
 					res.opts.Progress.AddSkippedFile(location, node.Size)
 					// BackOtter: a file whose contents are right, but
@@ -729,6 +747,17 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 					}
 				} else {
 					res.opts.Progress.AddFile(node.Size)
+					if !res.opts.DryRun && unread {
+						// A file whose contents weren't backed up
+						// goes into a new, empty one: the one there
+						// may have av_quarantined, which keeps it
+						// closed to the restore too.
+						if err := fs.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+							if err := res.sanitizeError(location, err); err != nil {
+								return err
+							}
+						}
+					}
 					if !res.opts.DryRun {
 						// Whether the file goes into a new, empty file,
 						// which alone may be written sparse: a hole in

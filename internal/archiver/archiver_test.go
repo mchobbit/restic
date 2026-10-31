@@ -2743,6 +2743,54 @@ func TestMetadataBackupWarning(t *testing.T) {
 	rtest.Equals(t, 1, len(warnings))
 }
 
+func TestSaveUnread(t *testing.T) {
+	tempdir := t.TempDir()
+	filename := filepath.Join(tempdir, "file")
+	repo := repository.TestRepository(t)
+
+	arch := New(repo, fs.Local{}, Options{})
+	var errs []error
+	arch.Error = func(item string, err error) error {
+		errs = append(errs, err)
+		return nil
+	}
+	var warnings []string
+	arch.Warn = func(message string) {
+		warnings = append(warnings, message)
+	}
+
+	arch.summary = &Summary{}
+
+	// A file av_quarantined keeps closed: its node without contents, with
+	// a warning, no error.
+	noder := &mockToNoder{node: &data.Node{Type: data.NodeTypeFile, Size: 7, Mode: 0o644}}
+	fn, excluded, err := arch.saveUnread("/file", filename, noder, nil, time.Now())
+	rtest.OK(t, err)
+	rtest.Assert(t, !excluded, "file excluded")
+	node := fn.take(context.TODO()).node
+	rtest.Equals(t, uint64(0), node.Size)
+	rtest.Assert(t, node.Content != nil && len(node.Content) == 0, "content %v, want empty", node.Content)
+	size, ok, err := node.UnreadSize()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok && size == 7, "unread size %v %v, want 7", size, ok)
+	rtest.Equals(t, 0, len(errs))
+	rtest.Equals(t, []string{filename + ": av_quarantined: contents not backed up (7 bytes)"}, warnings)
+	rtest.Equals(t, uint(1), arch.summary.Files.New)
+}
+
+func TestFileChangedUnread(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "file")
+	save(t, filename, []byte{})
+	fs := &fs.Local{}
+	fi, err := fs.Lstat(filename)
+	rtest.OK(t, err)
+	node := nodeFromFile(t, fs, filename)
+	rtest.Assert(t, !fileChanged(fi, node, 0), "unchanged file detected as changed")
+	// Backed up without its contents: never the same.
+	node.SetUnread(0)
+	rtest.Assert(t, fileChanged(fi, node, 0), "a node without contents taken for the file")
+}
+
 func TestIrregularFile(t *testing.T) {
 	files := TestDir{
 		"testfile": TestFile{

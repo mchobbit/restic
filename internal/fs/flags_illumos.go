@@ -7,6 +7,7 @@ import (
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
+	"github.com/restic/restic/internal/errors"
 	"golang.org/x/sys/unix"
 )
 
@@ -21,25 +22,52 @@ const fileFlagsAttribute = data.TypeIllumosSystemAttributes
 
 // sysattrView opens the SUNWattr_rw view of the file at path, a regular file
 // or directory; other types of file have no system attributes worth keeping,
-// and opening a device or FIFO could have side effects.
+// and opening a device or FIFO could have side effects.  A file that can't
+// be opened (EACCES), root's open too when it has av_quarantined, is reached
+// as ls -/ and chmod S reach it, through its attribute directory alone
+// (openattrdirat).
 func sysattrView(path string, typ data.NodeType, write bool) (*os.File, error) {
 	if typ != data.NodeTypeFile && typ != data.NodeTypeDir {
 		return nil, unix.ENOTSUP
 	}
+	how := unix.O_RDONLY
+	if write {
+		how = unix.O_RDWR
+	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
-	if err != nil {
+	if err == nil {
+		how |= unix.O_XATTR // relative to the file
+	} else if errors.Is(err, unix.EACCES) {
+		// Relative to its attribute directory, where O_XATTR is EINVAL.
+		fd, err = openattrdirat(unix.AT_FDCWD, path)
+		if err != nil {
+			return nil, &os.PathError{Op: "openattrdirat", Path: path, Err: err}
+		}
+	} else {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	defer func() { _ = unix.Close(fd) }()
-	how := unix.O_XATTR | unix.O_RDONLY
-	if write {
-		how = unix.O_XATTR | unix.O_RDWR
-	}
 	vfd, err := unix.Openat(fd, "SUNWattr_rw", how, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "openat SUNWattr_rw", Path: path, Err: err}
 	}
 	return os.NewFile(uintptr(vfd), path+"/SUNWattr_rw"), nil
+}
+
+// isQuarantined tells whether the regular file at path has av_quarantined.
+func isQuarantined(path string) bool {
+	f, err := sysattrView(path, data.NodeTypeFile, false)
+	if err != nil {
+		debug.Log("no system attributes for %v: %v", path, err)
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	view, err := readSysattrs(f, path)
+	if err != nil {
+		debug.Log("no system attributes for %v: %v", path, err)
+		return false
+	}
+	return sysattrMask(view)&illumosSysattrBits["av_quarantined"] != 0
 }
 
 // nodeFillFileFlags records the system attributes of a regular file or

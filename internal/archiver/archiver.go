@@ -581,6 +581,9 @@ func (arch *Archiver) save(ctx context.Context, snPath, target string, previous 
 		err := meta.MakeReadable()
 		if err != nil {
 			debug.Log("MakeReadable() for %v returned error: %v", target, err)
+			if fs.QuarantinedOpenError(target, err) {
+				return arch.saveUnread(snPath, target, meta, previous, start)
+			}
 			return filterError(err)
 		}
 
@@ -651,6 +654,25 @@ func (arch *Archiver) save(ctx context.Context, snPath, target string, previous 
 	return fn, false, nil
 }
 
+// saveUnread saves the node of target, a regular file that illumos'
+// av_quarantined keeps closed to root too, without its contents
+// (fs.NodeUnreadQuarantined), with a warning: the backup doesn't fail for it.
+// meta is still open for its metadata alone.
+func (arch *Archiver) saveUnread(snPath, target string, meta ToNoder, previous *data.Node, start time.Time) (futureNode, bool, error) {
+	// Its extended attributes can't be listed (EACCES) either: left out.
+	node, err := arch.nodeFromFileInfo(snPath, target, meta, true)
+	if err != nil {
+		return futureNode{}, false, err
+	}
+	arch.warn(target, fs.NodeUnreadQuarantined(node))
+	arch.trackItem(snPath, previous, node, ItemStats{}, time.Since(start))
+	return newFutureNodeWithResult(futureNodeResult{
+		snPath: snPath,
+		target: target,
+		node:   node,
+	}), false, nil
+}
+
 // fileChanged tries to detect whether a file's content has changed compared
 // to the contents of node, which describes the same path in the parent backup.
 // It should only be run for regular files.
@@ -664,6 +686,10 @@ func fileChanged(fi *fs.ExtendedFileInfo, node *data.Node, ignoreFlags uint) boo
 	case uint64(fi.Size) != node.Size:
 		return true
 	case !fi.ModTime.Equal(node.ModTime):
+		return true
+	case node.GenericAttributes[data.TypeIllumosUnreadSize] != nil:
+		// Backed up without its contents (av_quarantined): read
+		// again, they may be readable now.
 		return true
 	}
 

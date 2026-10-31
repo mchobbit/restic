@@ -97,6 +97,8 @@ const (
 	TypeIllumosXattrMeta GenericAttributeType = "illumos.xattr_meta"
 	// TypeIllumosZFSProject is the GenericAttributeType used for storing an illumos file's ZFS project ID and whether it hands it down (zfs project -p ID -s), when it has either.
 	TypeIllumosZFSProject GenericAttributeType = "illumos.zfs_project"
+	// TypeIllumosUnreadSize is the GenericAttributeType used for marking a regular file whose contents weren't backed up, because illumos' av_quarantined system attribute refused to open it: its size then, in bytes (the node's own size is 0, with no content).
+	TypeIllumosUnreadSize GenericAttributeType = "illumos.unread_size"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -113,6 +115,7 @@ func init() {
 	storeGenericAttributeType(TypeLinuxZFSDosFlags)
 	storeGenericAttributeType(TypeUnixBirthTime)
 	storeGenericAttributeType(TypeIllumosOwnerSID, TypeIllumosGroupSID, TypeIllumosXattrMeta, TypeIllumosZFSProject)
+	storeGenericAttributeType(TypeIllumosUnreadSize)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

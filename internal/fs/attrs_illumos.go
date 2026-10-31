@@ -29,7 +29,10 @@ import (
 //go:cgo_import_dynamic libc_facl facl "libc.so"
 //go:linkname procfacl libc_facl
 
-var procacl, procfacl uintptr
+//go:cgo_import_dynamic libc___openattrdirat __openattrdirat "libc.so"
+//go:linkname procopenattrdirat libc___openattrdirat
+
+var procacl, procfacl, procopenattrdirat uintptr
 
 // sysvicall6 is in sysvicall_illumos_amd64.s.
 func sysvicall6(trap, nargs, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err syscall.Errno)
@@ -64,6 +67,23 @@ func acl(path string, cmd int, n int, buf *rawACE) (int, error) {
 func facl(fd int, cmd int, n int, buf *rawACE) (int, error) {
 	r, _, errno := sysvicall6(uintptr(unsafe.Pointer(&procfacl)), 4,
 		uintptr(fd), uintptr(cmd), uintptr(n), uintptr(unsafe.Pointer(buf)), 0, 0)
+	if errno != 0 {
+		return -1, errno
+	}
+	return int(r), nil
+}
+
+// openattrdirat opens the attribute directory of the file at path, relative
+// to the directory dirfd (unix.AT_FDCWD for the current one), without
+// opening the file: libc's __openattrdirat, which getattrat(3C) and
+// setattrat(3C), and so ls -/ and chmod S, use.  It follows a symlink.
+func openattrdirat(dirfd int, path string) (int, error) {
+	p, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return -1, err
+	}
+	r, _, errno := sysvicall6(uintptr(unsafe.Pointer(&procopenattrdirat)), 2,
+		uintptr(dirfd), uintptr(unsafe.Pointer(p)), 0, 0, 0, 0)
 	if errno != 0 {
 		return -1, errno
 	}

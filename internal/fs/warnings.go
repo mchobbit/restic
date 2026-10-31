@@ -127,17 +127,21 @@ func IsWarning(err error) bool {
 		errors.As(err, &xattrs) || errors.As(err, &sid) || errors.As(err, &malformed)
 }
 
-// BackupWarning is metadata a backup couldn't keep for a reason that isn't
-// the file's: on illumos, the SIDs of ephemeral owners, groups and ACL
-// entries when idmap gives none (idmapd isn't running, say).  The fs
-// package gives it once per backup; the archiver prints it as a warning,
-// and the backup still succeeds.
+// BackupWarning is something a backup couldn't keep for a reason that isn't
+// an error: on illumos, the SIDs of ephemeral owners, groups and ACL
+// entries when idmap gives none (idmapd isn't running, say), which the fs
+// package gives once per backup, and the contents of a file that
+// av_quarantined keeps closed (NodeUnreadQuarantined), once per file.  The
+// archiver prints it as a warning, and the backup still succeeds.
 type BackupWarning struct {
 	Msg string
-	Err error
+	Err error // nil when Msg says it all
 }
 
 func (w *BackupWarning) Error() string {
+	if w.Err == nil {
+		return w.Msg
+	}
 	return fmt.Sprintf("%v: %v", w.Msg, w.Err)
 }
 

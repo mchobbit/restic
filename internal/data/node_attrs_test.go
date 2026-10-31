@@ -183,3 +183,30 @@ func TestNodeBirthTime(t *testing.T) {
 	rtest.OK(t, err)
 	rtest.Assert(t, !ok, "birth time null taken")
 }
+
+func TestNodeUnread(t *testing.T) {
+	node := Node{Type: NodeTypeFile, Size: 5}
+	_, ok, err := node.UnreadSize()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "a node without the attribute was unread")
+
+	node.SetSparse()
+	node.SetUnread(5)
+	rtest.Equals(t, uint64(0), node.Size)
+	rtest.Assert(t, node.Content != nil && len(node.Content) == 0, "content %v, want empty", node.Content)
+	buf, err := json.Marshal(node)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"name":"","type":"file","mtime":"0001-01-01T00:00:00Z","atime":"0001-01-01T00:00:00Z","ctime":"0001-01-01T00:00:00Z","uid":0,"gid":0,"generic_attributes":{"illumos.unread_size":5},"content":[]}`, string(buf))
+
+	var back Node
+	rtest.OK(t, json.Unmarshal(buf, &back))
+	size, ok, err := back.UnreadSize()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok && size == 5, "unread size %v %v, want 5", size, ok)
+
+	back.GenericAttributes[TypeIllumosUnreadSize] = json.RawMessage(`"5"`)
+	_, ok, err = back.UnreadSize()
+	var malformed *MalformedAttributeError
+	rtest.Assert(t, !ok && errors.As(err, &malformed) && malformed.Attr == TypeIllumosUnreadSize,
+		"illumos.unread_size \"5\": want a MalformedAttributeError, got %v", err)
+}

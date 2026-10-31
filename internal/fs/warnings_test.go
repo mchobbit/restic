@@ -25,6 +25,8 @@ func TestSplitBackupWarnings(t *testing.T) {
 	rtest.Equals(t, failed.Error(), rest.Error())
 	rtest.Equals(t, []error{idmap}, warnings)
 	rtest.Equals(t, "idmap offline: SID owners not kept: idmap status -9993", idmap.Error())
+	rtest.Equals(t, "av_quarantined: contents not backed up (3 bytes)",
+		(&BackupWarning{Msg: "av_quarantined: contents not backed up (3 bytes)"}).Error())
 
 	// Alone, there is no error left.
 	rest, warnings = SplitBackupWarnings(errors.Join(nil, idmap))
