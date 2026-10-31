@@ -175,6 +175,16 @@ new restic release rather than merged.
 - Access times, holes, Linux project IDs and casefolding follow the rules
   below, which rustic-bko follows too, so that either tool restores the
   other's snapshots the same way.
+- Extended attributes are stored in the byte order of their names, on
+  every system restic reads them on but Windows (Linux, macOS, FreeBSD,
+  NetBSD, illumos), as rustic-bko stores them; stock restic keeps the
+  order the file system lists them in.  The order means nothing to a
+  restore, which sets each attribute by name.
+- Times in nodes (and `unix.birthtime`, `illumos.xattr_meta`) are written
+  in UTC with `Z`, as stock restic writes them; stock rustic writes the
+  same instants with `+00:00`.  Both tools read either form (any offset),
+  so the two differ only in a snapshot's bytes, never in what a restore
+  sets.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 
@@ -226,6 +236,14 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
      is not sparse.  Elsewhere the probe opens the file with
      `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC`.  The decision always
      uses the lstat's size and blocks.
+
+  On DragonFly's HAMMER2 the blocks mark more than files with holes, in
+  both tools alike: a file of up to 512 bytes, kept in its inode (0
+  blocks), a compressed one (LZ4 by default) and runs of zeros, which
+  HAMMER2 doesn't store.  That does no harm: such a file is restored sparse
+  (S4), which writes every byte of it but each chunk's leading zeros, so it
+  comes back the same, only with holes where those zeros were (HAMMER2
+  itself stores no zeros anyway).
 
   A sparse file gets `"unix.sparse": true`.  On restore, `false`, no
   attribute or a malformed one (S9) means "not marked".

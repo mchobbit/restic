@@ -3,6 +3,8 @@
 package fs
 
 import (
+	"slices"
+
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
@@ -56,6 +58,9 @@ func nodeFillExtendedAttributes(node *data.Node, path string, ignoreListError bo
 		}
 		return err
 	}
+	// BackOtter: stored in byte order of their names, as rustic-bko stores
+	// them, not in the order the file system lists them.
+	slices.Sort(xattrs)
 
 	node.ExtendedAttributes = make([]data.ExtendedAttribute, 0, len(xattrs))
 	for _, attr := range xattrs {
