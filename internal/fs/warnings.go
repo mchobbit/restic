@@ -2,6 +2,7 @@ package fs
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/errors"
@@ -40,6 +41,25 @@ func (w *FlagsWarning) Error() string {
 	return w.Msg
 }
 
+// NotRootWarning is the metadata of a file that a restore not running as
+// root wasn't permitted to set (EPERM, EACCES): trusted.* extended
+// attributes on Linux, FreeBSD's system extended attributes, and so on, each
+// with its error, which names it.  A failed lchown isn't one: that is
+// ignored, as in stock restic.  The restorer warns once per file, and
+// carries on.
+type NotRootWarning struct {
+	Path string
+	Errs []error
+}
+
+func (w *NotRootWarning) Error() string {
+	msgs := make([]string, len(w.Errs))
+	for i, err := range w.Errs {
+		msgs[i] = err.Error()
+	}
+	return fmt.Sprintf("%v: not set, not running as root: %v", w.Path, strings.Join(msgs, "; "))
+}
+
 // SIDWarning is a SID that idmap couldn't map to an id on illumos (idmapd
 // isn't running, say): the owner or group of a file (illumos.owner_sid,
 // illumos.group_sid), or the user or group of an ACL entry (illumos.acl,
@@ -61,15 +81,16 @@ func (w *SIDWarning) Unwrap() error {
 }
 
 // IsWarning tells whether err is one the restorer only warns about: an
-// UnsupportedError, a FlagsWarning, a SIDWarning or a
+// UnsupportedError, a FlagsWarning, a NotRootWarning, a SIDWarning or a
 // data.MalformedAttributeError.
 func IsWarning(err error) bool {
 	var unsupported *UnsupportedError
 	var flags *FlagsWarning
+	var notRoot *NotRootWarning
 	var sid *SIDWarning
 	var malformed *data.MalformedAttributeError
-	return errors.As(err, &unsupported) || errors.As(err, &flags) || errors.As(err, &sid) ||
-		errors.As(err, &malformed)
+	return errors.As(err, &unsupported) || errors.As(err, &flags) || errors.As(err, &notRoot) ||
+		errors.As(err, &sid) || errors.As(err, &malformed)
 }
 
 // BackupWarning is metadata a backup couldn't keep for a reason that isn't

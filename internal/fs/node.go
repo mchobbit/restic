@@ -310,54 +310,82 @@ func mkfifo(path string, mode uint32) (err error) {
 // NodeRestoreMetadata restores node metadata
 func NodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool) error {
 	err := nodeRestoreMetadata(node, path, warn, xattrSelectFilter, ownershipByName)
+	if err != nil && os.Geteuid() > 0 {
+		err = notRootErrors(path, err)
+	}
 	if err != nil {
-		// It is common to have permission errors for folders like /home
-		// unless you're running as root, so ignore those.
-		rest, warnings := SplitWarnings(err)
-		if os.Geteuid() > 0 && errors.Is(rest, os.ErrPermission) {
-			debug.Log("not running as root, ignoring permission error for %v: %v",
-				path, err)
-			return errors.Join(warnings...)
-		}
 		debug.Log("restoreMetadata(%s) error %v", path, err)
 	}
 
 	return err
 }
 
+// notRootErrors returns err, from restoring path's metadata when not running
+// as root, without a permission error from lchown: it is common to have those
+// for folders like /home unless you're running as root, so they are ignored,
+// as in stock restic.  BackOtter: every other permission error in err is
+// given in one NotRootWarning for path, naming what was not set, and the
+// other errors stay errors.
+func notRootErrors(path string, err error) error {
+	rest, warnings := SplitWarnings(err)
+	rest, denied := splitErrors(rest, func(err error) bool {
+		return errors.Is(err, os.ErrPermission)
+	})
+	var notSet []error
+	for _, err := range denied {
+		var owner *ownershipError
+		if errors.As(err, &owner) {
+			debug.Log("not running as root, ignoring permission error for %v: %v", path, err)
+			continue
+		}
+		notSet = append(notSet, err)
+	}
+	if len(notSet) > 0 {
+		warnings = append(warnings, &NotRootWarning{Path: path, Errs: notSet})
+	}
+	return errors.Join(append([]error{rest}, warnings...)...)
+}
+
+// ownershipError is lchown's error in nodeRestoreMetadata, which
+// notRootErrors ignores when it is a permission error.
+type ownershipError struct {
+	err error
+}
+
+func (e *ownershipError) Error() string {
+	return e.err.Error()
+}
+
+func (e *ownershipError) Unwrap() error {
+	return e.err
+}
+
+// nodeRestoreMetadata restores node's metadata at path, carrying on after a
+// step fails.  BackOtter: it returns the errors of all steps, not only the
+// first, joined with the warnings among them (a file system without project
+// IDs, a malformed attribute), for the restorer to warn about; when not
+// running as root, NodeRestoreMetadata keeps a later permission error from
+// being lost behind lchown's.
 func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xattrSelectFilter func(xattrName string) bool, ownershipByName bool) error {
-	var firsterr error
+	var errs []error
 
 	if err := lchown(path, node, ownershipByName); err != nil {
-		firsterr = errors.WithStack(err)
+		errs = append(errs, &ownershipError{errors.WithStack(err)})
 	}
 
 	if err := nodeRestoreExtendedAttributes(node, path, xattrSelectFilter); err != nil {
 		debug.Log("error restoring extended attributes for %v: %v", path, err)
-		if firsterr == nil {
-			firsterr = err
-		}
+		errs = append(errs, err)
 	}
 
-	// BackOtter: the warnings among the generic attributes' errors (a file
-	// system without project IDs, a malformed attribute) are all returned,
-	// joined after the first error, for the restorer to warn about.
-	var warnings []error
 	if err := nodeRestoreGenericAttributes(node, path, warn); err != nil {
 		debug.Log("error restoring generic attributes for %v: %v", path, err)
-		err, warnings = SplitWarnings(err)
-		if err != nil && firsterr == nil {
-			firsterr = err
-		}
+		errs = append(errs, err)
 	}
 
 	if err := nodeRestoreTimestamps(node, path); err != nil {
 		debug.Log("error restoring timestamps for %v: %v", path, err)
-		err, w := SplitWarnings(err)
-		warnings = append(warnings, w...)
-		if err != nil && firsterr == nil {
-			firsterr = err
-		}
+		errs = append(errs, err)
 	}
 
 	// Moving RestoreTimestamps and restoreExtendedAttributes calls above as for readonly files in windows
@@ -365,15 +393,11 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	// calls above would fail.
 	if node.Type != data.NodeTypeSymlink {
 		if err := chmod(path, node.Mode); err != nil {
-			if firsterr == nil {
-				firsterr = errors.WithStack(err)
-			}
+			errs = append(errs, errors.WithStack(err))
 		}
 	} else if err := nodeRestoreSymlinkMode(node, path); err != nil {
 		debug.Log("error restoring the mode of symlink %v: %v", path, err)
-		if firsterr == nil {
-			firsterr = err
-		}
+		errs = append(errs, err)
 	}
 
 	// After the mode: chmod rewrites an NFSv4 ACL, and setting an ACL sets
@@ -381,17 +405,10 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	// sets the mtime too (NetBSD), it sets the times again after them.
 	if err := nodeRestoreACLs(node, path); err != nil {
 		debug.Log("error restoring ACLs for %v: %v", path, err)
-		err, w := SplitWarnings(err)
-		warnings = append(warnings, w...)
-		if err != nil && firsterr == nil {
-			firsterr = err
-		}
+		errs = append(errs, err)
 	}
 
-	if len(warnings) == 0 {
-		return firsterr
-	}
-	return errors.Join(append([]error{firsterr}, warnings...)...)
+	return errors.Join(errs...)
 }
 
 func nodeRestoreTimestamps(node *data.Node, path string) error {

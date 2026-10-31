@@ -197,7 +197,12 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   default.  `--ownership-by-name` (rustic-bko: `--by-name`, or its alias
   `--ownership-by-name`) gives them the IDs their user and group names have
   on the target instead; a name that is empty or unknown there falls back
-  to the saved ID, never to 0.
+  to the saved ID, never to 0.  A restore not running as root ignores the
+  ownership it can't set, as stock restic does (rustic-bko warns about each
+  file); any other metadata it isn't permitted to set (`EPERM`, `EACCES`:
+  `trusted.*` extended attributes, FreeBSD's system extended attributes,
+  a project ID, ...) gets one warning per file, naming what wasn't set,
+  and isn't an error.  The late file and inode flags stay errors (S10).
 - **S3 Which files are sparse.**  A regular file whose lstat gives `size`
   and `blocks`:
   1. is not sparse if `size <= 0` or `blocks*512 >= size` (this covers
@@ -291,7 +296,8 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   first file, and gives the number of files at the end; the restore still
   exits 0.  On FreeBSD, OpenBSD, NetBSD, DragonFly and illumos the same
   goes for their file flags.  Any
-  other failure (`EPERM`, `EDQUOT`, `EIO`, ...) is an error, and restic
+  other failure (`EPERM`, `EDQUOT`, `EIO`, ...; but see S2 for a restore not
+  running as root) is an error, and restic
   exits 1, while rustic-bko only warns about it and exits 0 (upstream
   rustic's design).  That is the one exit-status difference left between
   the tools.

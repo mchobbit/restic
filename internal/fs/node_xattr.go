@@ -5,28 +5,32 @@ package fs
 import (
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
+	"github.com/restic/restic/internal/errors"
 )
 
 // getxattr, listxattr, setxattr and removexattr are in xattr_pkg.go (pkg/xattr),
 // and in xattr_illumos.go on illumos.
 
 func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilter func(xattrName string) bool) error {
+	// BackOtter: an attribute that can't be set (a trusted.* one when not
+	// running as root) doesn't keep the others from being set or removed;
+	// the errors are all returned, each naming its attribute.
+	var errs []error
 	expectedAttrs := map[string]struct{}{}
 	for _, attr := range node.ExtendedAttributes {
 		// Only restore xattrs that match the filter
 		if xattrSelectFilter(attr.Name) {
-			err := setxattr(path, attr.Name, attr.Value)
-			if err != nil {
-				return err
-			}
 			expectedAttrs[attr.Name] = struct{}{}
+			if err := setxattr(path, attr.Name, attr.Value); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 
 	// remove unexpected xattrs
 	xattrs, err := listxattr(path)
 	if err != nil {
-		return err
+		return errors.Join(append(errs, err)...)
 	}
 	for _, name := range xattrs {
 		if _, ok := expectedAttrs[name]; ok {
@@ -35,12 +39,12 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 		// Only attempt to remove xattrs that match the filter
 		if xattrSelectFilter(name) {
 			if err := removexattr(path, name); err != nil {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func nodeFillExtendedAttributes(node *data.Node, path string, ignoreListError bool, warnf func(format string, args ...any)) error {

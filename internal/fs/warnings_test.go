@@ -2,6 +2,8 @@ package fs
 
 import (
 	"errors"
+	"os"
+	"syscall"
 	"testing"
 
 	"github.com/restic/restic/internal/data"
@@ -34,4 +36,35 @@ func TestSplitBackupWarnings(t *testing.T) {
 	rest, warnings = SplitBackupWarnings(sid)
 	rtest.Equals(t, error(sid), rest)
 	rtest.Equals(t, 0, len(warnings))
+}
+
+func TestNotRootErrors(t *testing.T) {
+	path := "/restore/file"
+	owner := &ownershipError{&os.LinkError{Op: "lchown", Old: path, New: path, Err: syscall.EPERM}}
+	trusted := &os.PathError{Op: "setxattr trusted.bko", Path: path, Err: syscall.EPERM}
+	system := &os.PathError{Op: "extattr_set_link system.bko", Path: path, Err: syscall.EACCES}
+	failed := &os.PathError{Op: "utimes", Path: path, Err: syscall.EIO}
+	unsupported := &UnsupportedError{Attr: data.TypeLinuxProjectID, Err: syscall.EOPNOTSUPP}
+
+	// A failed lchown alone is ignored, as in stock restic.
+	rtest.Assert(t, notRootErrors(path, errors.Join(owner)) == nil, "lchown's EPERM not ignored")
+
+	// The permission errors after it are one warning naming each, the other
+	// errors stay errors, and the other warnings stay as they are.
+	err := notRootErrors(path, errors.Join(owner, trusted, errors.Join(system, unsupported), failed))
+	rest, warnings := SplitWarnings(err)
+	rtest.Equals(t, failed.Error(), rest.Error())
+	rtest.Equals(t, 2, len(warnings))
+	rtest.Equals(t, error(unsupported), warnings[0])
+	var notRoot *NotRootWarning
+	rtest.Assert(t, errors.As(warnings[1], &notRoot), "not a NotRootWarning: %v", warnings[1])
+	rtest.Equals(t, []error{trusted, system}, notRoot.Errs)
+	rtest.Equals(t, "/restore/file: not set, not running as root: setxattr trusted.bko /restore/file: "+
+		"operation not permitted; extattr_set_link system.bko /restore/file: permission denied", notRoot.Error())
+
+	// lchown failing for another reason stays an error.
+	other := &ownershipError{&os.LinkError{Op: "lchown", Old: path, New: path, Err: syscall.EINVAL}}
+	rest, warnings = SplitWarnings(notRootErrors(path, errors.Join(other, trusted)))
+	rtest.Equals(t, other.Error(), rest.Error())
+	rtest.Equals(t, 1, len(warnings))
 }
