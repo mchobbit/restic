@@ -158,7 +158,7 @@ func restoreZFSDosFlagsWith(path string, flags uint64, get func() (uint64, error
 		return nil
 	}
 	own := current &^ zfsDosFlags
-	err = setBitsBestEffort(zfsDosFlagsAttribute, "ZFS DOS flags", flags&zfsDosFlags, func(f uint64) error { return set(own | f) })
+	err = changeBitsBestEffort(zfsDosFlagsAttribute, "ZFS DOS flags", current&zfsDosFlags, flags&zfsDosFlags, func(f uint64) error { return set(own | f) })
 	if err != nil {
 		return &os.PathError{Op: "ZFS_IOC_SETDOSFLAGS", Path: path, Err: err}
 	}

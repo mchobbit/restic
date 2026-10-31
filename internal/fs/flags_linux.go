@@ -127,7 +127,12 @@ func restoreFileFlags(path string, typ data.NodeType, flags uint32, compression 
 		},
 	}
 	if compression != nil {
-		ops.setCompression = func() error { return setxattr(path, "btrfs.compression", compression) }
+		ops.setCompression = func() error {
+			if err := setxattr(path, "btrfs.compression", compression); !xattrUnsupported(err) {
+				return err
+			}
+			return nil
+		}
 	}
 	return restoreFlagsWith(path, typ, flags, ops)
 }
@@ -175,7 +180,7 @@ func setLateFlags(path string, current, flags uint32, ops inodeFlagOps) error {
 	}
 	var errs []error
 	if own|want != current {
-		err := setFlagsBestEffort(want, func(f uint32) error { return ops.set(own | f) })
+		err := changeBitsBestEffort(fileFlagsAttribute, "file flags", current&keptLate, want, func(f uint32) error { return ops.set(own | f) })
 		if err != nil {
 			errs = append(errs, &os.PathError{Op: "FS_IOC_SETFLAGS", Path: path, Err: err})
 		}

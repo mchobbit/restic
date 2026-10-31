@@ -114,3 +114,53 @@ func TestSetBitsBestEffortWide(t *testing.T) {
 	rtest.Assert(t, errors.Is(err, syscall.EPERM), "error %v doesn't wrap EPERM", err)
 	rtest.Assert(t, !IsWarning(err), "a refused flag is a warning")
 }
+
+func TestChangeBitsBestEffort(t *testing.T) {
+	// illumos's system attributes as a file's owner who isn't root: every
+	// write names all of them; immutable (0x20) can't be set, av_modified
+	// (0x200) can't be cleared, everything else can be changed.  A new file
+	// has archive and av_modified (0x208).
+	const immutable, avModified = 0x20, 0x200
+	var current uint32
+	set := func(f uint32) error {
+		if f&immutable != 0 && current&immutable == 0 ||
+			f&avModified == 0 && current&avModified != 0 {
+			return syscall.EPERM
+		}
+		current = f
+		return nil
+	}
+
+	// archive, hidden, immutable, av_modified: all but immutable.
+	current = 0x208
+	err := changeBitsBestEffort(fileFlagsAttribute, "file flags", current, uint32(0x229), set)
+	rtest.Assert(t, errors.Is(err, syscall.EPERM), "error %v doesn't wrap EPERM", err)
+	rtest.Equals(t, "file flags 0x20 of 0x229 not set: operation not permitted", err.Error())
+	rtest.Equals(t, uint32(0x209), current)
+
+	// archive and av_modified cleared: archive is.
+	current = 0x208
+	err = changeBitsBestEffort(fileFlagsAttribute, "file flags", current, uint32(0), set)
+	rtest.Equals(t, "file flags 0x200 not cleared: operation not permitted", err.Error())
+	rtest.Equals(t, uint32(0x200), current)
+
+	// hidden set and av_modified cleared, immutable set: hidden is.
+	current = 0x208
+	err = changeBitsBestEffort(fileFlagsAttribute, "file flags", current, uint32(0x29), set)
+	rtest.Equals(t, "file flags 0x20 of 0x29 not set, 0x200 not cleared: operation not permitted", err.Error())
+	rtest.Equals(t, uint32(0x209), current)
+
+	// What the file has already: nothing to write.
+	rtest.OK(t, changeBitsBestEffort(fileFlagsAttribute, "file flags", uint32(0x208), uint32(0x208),
+		func(uint32) error { return syscall.EPERM }))
+
+	// Settable as asked: no error, and one write.
+	current = 0x208
+	writes := 0
+	rtest.OK(t, changeBitsBestEffort(fileFlagsAttribute, "file flags", current, uint32(0x20b), func(f uint32) error {
+		writes++
+		return set(f)
+	}))
+	rtest.Equals(t, uint32(0x20b), current)
+	rtest.Equals(t, 1, writes)
+}

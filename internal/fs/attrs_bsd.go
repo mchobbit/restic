@@ -218,7 +218,10 @@ func ignoreUnsupported(path string, err error) error {
 	return err
 }
 
-// nodeRestoreOSAttributes restores the system extended attributes.
+// nodeRestoreOSAttributes restores the system extended attributes.  Those a
+// file system without extended attributes refuses (FFSv1, plain FFSv2) are
+// one XattrsWarning naming them all, as the user namespace's are
+// (node_xattr.go): a warning of their own.
 func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	var attrs map[string][]byte
 	ok, err := node.GenericAttribute(osACLs.systemExtattrs, &attrs)
@@ -226,8 +229,17 @@ func nodeRestoreOSAttributes(node *data.Node, path string) error {
 		return err
 	}
 	var errs []error
+	var unsupported XattrsWarning
 	for _, name := range slices.Sorted(maps.Keys(attrs)) {
-		errs = append(errs, setSystemExtattr(path, name, attrs[name]))
+		err := setSystemExtattr(path, name, attrs[name])
+		if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENOTSUP) {
+			unsupported.add(path, "system."+name, err)
+			continue
+		}
+		errs = append(errs, err)
+	}
+	if unsupported.Names != nil {
+		errs = append(errs, &unsupported)
 	}
 	return errors.Join(errs...)
 }

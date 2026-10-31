@@ -89,7 +89,13 @@ func readSysattrs(f *os.File, path string) (map[string]nvValue, error) {
 }
 
 // restoreFileFlags sets the system attributes the view has to those in
-// flags, writing their booleans alone (illumos_sysattr.go).
+// flags, writing their booleans alone (illumos_sysattr.go).  Each write
+// names every attribute the view has, so one that can't be changed (by an
+// owner who isn't root: nodump, appendonly, nounlink and immutable, and
+// clearing av_modified, which writing the contents set) refuses the whole
+// write; naming one without changing it needs no privilege.  So if flags
+// can't be set at once, the attributes are changed one at a time from what
+// the file has, and those refused keep their value.
 func restoreFileFlags(path string, typ data.NodeType, flags uint32, _ []byte) error {
 	f, err := sysattrView(path, typ, true)
 	if err != nil {
@@ -100,7 +106,7 @@ func restoreFileFlags(path string, typ data.NodeType, flags uint32, _ []byte) er
 	if err != nil {
 		return err
 	}
-	return setFlagsBestEffort(flags, func(mask uint32) error {
+	return changeBitsBestEffort(fileFlagsAttribute, "file flags", sysattrMask(view), flags, func(mask uint32) error {
 		if _, err := f.WriteAt(sysattrMaskNvlist(view, mask), 0); err != nil {
 			return &os.PathError{Op: "write SUNWattr_rw", Path: path, Err: err}
 		}

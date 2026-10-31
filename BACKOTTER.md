@@ -38,7 +38,16 @@ new restic release rather than merged.
     (archive and av_modified), 0 included: a file whose archive or
     av_modified was cleared keeps that.  A restore writes a packed nvlist
     of the attributes' booleans alone, never the view it read: that would
-    set the creation time too, which an immutable file refuses.
+    set the creation time too, which an immutable file refuses.  Each
+    write names every attribute, and one the restore may not change
+    refuses the whole write: for an owner who isn't root, setting nodump,
+    appendonly, nounlink or immutable, and clearing av_modified, which
+    writing the contents set (naming one without changing it needs no
+    privilege).  So when the mask can't be written at once, the restore
+    changes the attributes that differ one at a time, from what the file
+    has, and names those refused: hidden and archive still come back
+    beside an immutable a non-root restore can't set, and archive is
+    cleared where av_modified can't be.
   - `illumos.xattr_meta`: the owner, group, mode, times and ACL of each of
     a file's extended attributes (attribute files, `runat(1)`), by name:
     `{"note":{"uid":1500,"gid":1501,"mode":416,"mtime":"2001-09-09T01:46:40.123456789Z","atime":"2001-09-09T01:46:40Z","acl":[...]}}`,
@@ -66,6 +75,11 @@ new restic release rather than merged.
     (`noscache`, `nohistory` and the rest; DragonFly has no ACLs or
     extended attributes).
   - `linux.project_id`: a file's project ID (`chattr -p`), when it isn't 0.
+    Not on bcachefs (checked on Linux 6.12): there `chattr -p` sets one,
+    but `FS_IOC_FSGETXATTR` reports 0, so none is stored, and a bcachefs
+    project ID is lost without a word, in rustic-bko alike; accepted, as a
+    kernel quirk.  The project shows only as the extended attribute
+    `bcachefs_effective.project`, which neither tool keeps (below).
   - `linux.zfs_dos_flags`: the DOS flags OpenZFS keeps on Linux
     (`ZFS_IOC_GETDOSFLAGS`), as a number: readonly, hidden, system,
     archive, nounlink, offline and sparse (mask `0x302f00000000`).
@@ -103,7 +117,12 @@ new restic release rather than merged.
   ZFS, they get one warning per restore, with the number of files.
   btrfs's no-copy-on-write flag goes on while a new file is still empty:
   btrfs ignores it on one with data.  Where the target file system doesn't support a flag, the
-  others are still set and restic warns about that one (S10 below).  Where it doesn't
+  others are still set and restic warns about that one (S10 below).  Where
+  it doesn't support extended attributes (NetBSD's FFSv1 and plain FFSv2),
+  or an attribute's namespace (`ENOTSUP`, `EOPNOTSUPP`), restic warns once
+  per file, naming each attribute not set, those of FreeBSD's and NetBSD's
+  system namespace (`system.NAME`) in a warning of their own, and the
+  restore still exits 0; stock restic says nothing.  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
 - Birth times are restored just before the atime and mtime.  illumos sets
@@ -133,6 +152,11 @@ new restic release rather than merged.
   are written; an attribute the restore left out is left alone.  This goes
   before the file's own times (writing an attribute file leaves them) and
   flags.  A snapshot without the attribute restores as before.
+- A file with illumos' `av_quarantined` system attribute can't be opened,
+  by root either (`EACCES`), so its contents can't be read: the backup
+  reports an error for it and leaves it out, node and attributes too, and
+  exits 3 (rustic-bko warns and exits 0, as with any file it can't read).
+  To back one up, clear the attribute first (`chmod S-vav_quarantined`).
 - illumos ZFS project IDs are restored with the extended attributes'
   metadata, before the flags, as each node's own ID and inheritance,
   whatever a file got from the directory it was created in; on another file
@@ -177,9 +201,15 @@ new restic release rather than merged.
   other's snapshots the same way.
 - Extended attributes are stored in the byte order of their names, on
   every system restic reads them on but Windows (Linux, macOS, FreeBSD,
-  NetBSD, illumos), as rustic-bko stores them; stock restic keeps the
-  order the file system lists them in.  The order means nothing to a
+  NetBSD, illumos), as rustic-bko stores them, so that the two tools'
+  nodes are the same; stock restic keeps the order the file system lists
+  them in.  The order means nothing to a
   restore, which sets each attribute by name.
+- bcachefs' `bcachefs_effective.*` extended attributes are neither backed
+  up nor restored (nor removed from a restored file), as in rustic-bko:
+  they show the options a file has, its own (`bcachefs.*`, which are kept)
+  or inherited from its directory, and its project ID, and setting one
+  succeeds but does nothing.  Stock restic keeps them.
 - Times in nodes (and `unix.birthtime`, `illumos.xattr_meta`) are written
   in UTC with `Z`, as stock restic writes them; stock rustic writes the
   same instants with `+00:00`.  Both tools read either form (any offset),

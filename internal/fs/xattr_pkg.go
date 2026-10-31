@@ -33,8 +33,20 @@ func isListxattrPermissionError(err error) bool {
 }
 
 // setxattr associates name and data together as an attribute of path.
+// BackOtter: an attribute the file system doesn't support is an error that
+// xattrUnsupported tells, for the restore to warn about, not nothing.
 func setxattr(path, name string, data []byte) error {
-	return handleXattrErr(xattr.LSet(path, name, data))
+	if err := xattr.LSet(path, name, data); err != nil {
+		return errors.WithStack(err)
+	}
+	return nil
+}
+
+// xattrUnsupported tells whether err, from setxattr, is one that
+// handleXattrErr makes nothing: the file system doesn't support the
+// attribute.
+func xattrUnsupported(err error) bool {
+	return errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, xattr.ENOATTR)
 }
 
 // removexattr removes the attribute name from path.

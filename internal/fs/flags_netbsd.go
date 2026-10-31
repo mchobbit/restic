@@ -26,7 +26,7 @@ func restoreFileFlags(path string, _ data.NodeType, flags uint32, _ []byte) erro
 		return &os.PathError{Op: "lstat", Path: path, Err: err}
 	}
 	own := st.Flags &^ netbsdFileFlags
-	return setFlagsBestEffort(flags&netbsdFileFlags, func(f uint32) error {
+	return changeBitsBestEffort(fileFlagsAttribute, "file flags", st.Flags&netbsdFileFlags, flags&netbsdFileFlags, func(f uint32) error {
 		return lchflags(path, own|f)
 	})
 }

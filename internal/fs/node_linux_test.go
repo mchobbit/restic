@@ -55,3 +55,43 @@ func TestNodeRestoreMetadataNotRoot(t *testing.T) {
 		rtest.Equals(t, []byte("u"), value)
 	}
 }
+
+// TestNodeRestoreExtendedAttributesUnsupported restores extended attributes
+// that the file system doesn't support (Linux knows no "bogus." namespace:
+// EOPNOTSUPP) beside one it does: one warning names them all, and the
+// others are set.
+func TestNodeRestoreExtendedAttributesUnsupported(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	rtest.OK(t, os.WriteFile(file, []byte("x"), 0o600))
+	if err := setxattr(file, "user.probe", []byte("x")); err != nil {
+		t.Skipf("no user extended attributes here: %v", err)
+	}
+	node := &data.Node{Type: data.NodeTypeFile, ExtendedAttributes: []data.ExtendedAttribute{
+		{Name: "bogus.one", Value: []byte("1")},
+		{Name: "user.kept", Value: []byte("2")},
+		{Name: "bogus.two", Value: []byte("3")},
+	}}
+	err := nodeRestoreExtendedAttributes(node, file, func(string) bool { return true })
+	var w *XattrsWarning
+	rtest.Assert(t, errors.As(err, &w), "no XattrsWarning: %v", err)
+	rtest.Equals(t, []string{"bogus.one", "bogus.two"}, w.Names)
+	rtest.Assert(t, IsWarning(err), "%v is not a warning", err)
+	rest, warnings := SplitWarnings(err)
+	rtest.Assert(t, rest == nil && len(warnings) == 1, "split into %v and %v", rest, warnings)
+	rtest.Equals(t, file+": extended attributes bogus.one, bogus.two not set, not supported by the target file system: operation not supported", err.Error())
+	value, err := getxattr(file, "user.kept")
+	rtest.OK(t, err)
+	rtest.Equals(t, "2", string(value))
+}
+
+func TestXattrKept(t *testing.T) {
+	for name, kept := range map[string]bool{
+		"user.backotter":                 true,
+		"trusted.backotter":              true,
+		"bcachefs.compression":           true,
+		"bcachefs_effective.project":     false,
+		"bcachefs_effective.compression": false,
+	} {
+		rtest.Equals(t, kept, xattrKept(name))
+	}
+}

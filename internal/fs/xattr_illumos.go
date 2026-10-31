@@ -108,13 +108,12 @@ func getxattr(path, name string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// setxattr sets the extended attribute name of path to data.  Like restic
-// elsewhere, it does nothing on a file system without extended attributes.
+// setxattr sets the extended attribute name of path to data.  On a file
+// system without extended attributes, or a file without them (a symlink),
+// that is an error that xattrUnsupported tells, for the restore to warn
+// about.
 func setxattr(path, name string, data []byte) error {
 	f, err := openAttr(path, name, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC)
-	if errors.Is(err, unix.ENOTSUP) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -123,6 +122,12 @@ func setxattr(path, name string, data []byte) error {
 		return err
 	}
 	return f.Close()
+}
+
+// xattrUnsupported tells whether err, from setxattr, says the file system or
+// the file has no extended attributes.
+func xattrUnsupported(err error) bool {
+	return errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP)
 }
 
 // removexattr removes the extended attribute name from path.

@@ -3,6 +3,7 @@ package fs
 import (
 	"fmt"
 	"strings"
+	"syscall"
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/errors"
@@ -60,6 +61,38 @@ func (w *NotRootWarning) Error() string {
 	return fmt.Sprintf("%v: not set, not running as root: %v", w.Path, strings.Join(msgs, "; "))
 }
 
+// XattrsWarning is the extended attributes of a file that the target file
+// system doesn't support (ENOTSUP, EOPNOTSUPP): a file system without any,
+// such as NetBSD's FFSv1 and plain FFSv2, or without their namespace.  The
+// restorer warns once per file, naming each (SPEC2 7.1), and carries on.
+type XattrsWarning struct {
+	Path  string
+	Names []string
+	Err   error // the first refusal's errno, or else its error
+}
+
+// add adds the attribute name of path, which setting refused with err.
+func (w *XattrsWarning) add(path, name string, err error) {
+	w.Path = path
+	w.Names = append(w.Names, name)
+	if w.Err == nil {
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			err = errno
+		}
+		w.Err = err
+	}
+}
+
+func (w *XattrsWarning) Error() string {
+	return fmt.Sprintf("%v: extended attributes %v not set, not supported by the target file system: %v",
+		w.Path, strings.Join(w.Names, ", "), w.Err)
+}
+
+func (w *XattrsWarning) Unwrap() error {
+	return w.Err
+}
+
 // SIDWarning is a SID that idmap couldn't map to an id on illumos (idmapd
 // isn't running, say): the owner or group of a file (illumos.owner_sid,
 // illumos.group_sid), or the user or group of an ACL entry (illumos.acl,
@@ -81,16 +114,17 @@ func (w *SIDWarning) Unwrap() error {
 }
 
 // IsWarning tells whether err is one the restorer only warns about: an
-// UnsupportedError, a FlagsWarning, a NotRootWarning, a SIDWarning or a
-// data.MalformedAttributeError.
+// UnsupportedError, a FlagsWarning, a NotRootWarning, an XattrsWarning, a
+// SIDWarning or a data.MalformedAttributeError.
 func IsWarning(err error) bool {
 	var unsupported *UnsupportedError
 	var flags *FlagsWarning
 	var notRoot *NotRootWarning
+	var xattrs *XattrsWarning
 	var sid *SIDWarning
 	var malformed *data.MalformedAttributeError
 	return errors.As(err, &unsupported) || errors.As(err, &flags) || errors.As(err, &notRoot) ||
-		errors.As(err, &sid) || errors.As(err, &malformed)
+		errors.As(err, &xattrs) || errors.As(err, &sid) || errors.As(err, &malformed)
 }
 
 // BackupWarning is metadata a backup couldn't keep for a reason that isn't

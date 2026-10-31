@@ -111,16 +111,45 @@ func setBitsBestEffort[T uint32 | uint64](attr data.GenericAttributeType, what s
 		}
 		return fmt.Errorf("%v not cleared: %w", what, firstErr)
 	}
-	var got, refused T
+	return bitsOneByOne(attr, what, 0, want, firstErr, set)
+}
+
+// changeBitsBestEffort is setBitsBestEffort for flags that are have now: if
+// set(want) fails, it changes the bits that differ from have one at a time,
+// starting from have, so that a bit set refuses to change keeps the value
+// it has, and the error names the bits it couldn't set or clear.  That
+// matters where set writes every bit, those it leaves as they are too
+// (illumos's system attributes: a new file has archive and av_modified,
+// which a file owner may set but, for av_modified, not clear).  When want
+// is have already, it does nothing.
+func changeBitsBestEffort[T uint32 | uint64](attr data.GenericAttributeType, what string, have, want T, set func(T) error) error {
+	if want == have {
+		return nil
+	}
+	firstErr := set(want)
+	if firstErr == nil {
+		return nil
+	}
+	return bitsOneByOne(attr, what, have, want, firstErr, set)
+}
+
+// bitsOneByOne changes the bits that differ between have and want one at a
+// time, from have, after set(want) failed with firstErr, and returns an
+// error naming the bits set refused: an *UnsupportedError wrapping
+// firstErr when every refusal said unsupported (unsupportedErr), else the
+// first other refusal.
+func bitsOneByOne[T uint32 | uint64](attr data.GenericAttributeType, what string, have, want T, firstErr error, set func(T) error) error {
+	got := have
+	var refused T
 	var failed error
 	for bit := T(1); bit != 0; bit <<= 1 {
-		if want&bit == 0 {
+		if (want^have)&bit == 0 {
 			continue
 		}
-		err := set(got | bit)
+		err := set(got ^ bit)
 		switch {
 		case err == nil:
-			got |= bit
+			got ^= bit
 		case unsupportedErr(err):
 			refused |= bit
 		default:
@@ -136,5 +165,13 @@ func setBitsBestEffort[T uint32 | uint64](attr data.GenericAttributeType, what s
 	if failed == nil {
 		return &UnsupportedError{Attr: attr, Bits: uint64(refused), Err: firstErr}
 	}
-	return fmt.Errorf("%v %#x of %#x not set: %w", what, refused, want, failed)
+	notSet, notCleared := refused&want, refused&^want
+	switch {
+	case notCleared == 0:
+		return fmt.Errorf("%v %#x of %#x not set: %w", what, notSet, want, failed)
+	case notSet == 0:
+		return fmt.Errorf("%v %#x not cleared: %w", what, notCleared, failed)
+	default:
+		return fmt.Errorf("%v %#x of %#x not set, %#x not cleared: %w", what, notSet, want, notCleared, failed)
+	}
 }

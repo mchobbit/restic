@@ -3,7 +3,9 @@
 package fs
 
 import (
+	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
@@ -13,20 +15,42 @@ import (
 // getxattr, listxattr, setxattr and removexattr are in xattr_pkg.go (pkg/xattr),
 // and in xattr_illumos.go on illumos.
 
+// bcachefsEffective is the prefix of bcachefs' extended attributes that show
+// the options a file has, its own (bcachefs.*, kept) or inherited from its
+// directory, and its project ID: derived, and setting one does nothing.
+const bcachefsEffective = "bcachefs_effective."
+
+// xattrKept tells whether the extended attribute name is backed up and
+// restored.  BackOtter: not bcachefs_effective.* (Linux), which stock restic
+// keeps; rustic-bko leaves them out too.
+func xattrKept(name string) bool {
+	return runtime.GOOS != "linux" || !strings.HasPrefix(name, bcachefsEffective)
+}
+
 func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilter func(xattrName string) bool) error {
 	// BackOtter: an attribute that can't be set (a trusted.* one when not
 	// running as root) doesn't keep the others from being set or removed;
-	// the errors are all returned, each naming its attribute.
+	// the errors are all returned, each naming its attribute.  Those the
+	// file system doesn't support (none on NetBSD's FFSv1) are one
+	// XattrsWarning naming them all, not nothing.
 	var errs []error
+	var unsupported XattrsWarning
 	expectedAttrs := map[string]struct{}{}
 	for _, attr := range node.ExtendedAttributes {
 		// Only restore xattrs that match the filter
-		if xattrSelectFilter(attr.Name) {
+		if xattrSelectFilter(attr.Name) && xattrKept(attr.Name) {
 			expectedAttrs[attr.Name] = struct{}{}
-			if err := setxattr(path, attr.Name, attr.Value); err != nil {
+			err := setxattr(path, attr.Name, attr.Value)
+			switch {
+			case xattrUnsupported(err):
+				unsupported.add(path, attr.Name, err)
+			case err != nil:
 				errs = append(errs, err)
 			}
 		}
+	}
+	if unsupported.Names != nil {
+		errs = append(errs, &unsupported)
 	}
 
 	// remove unexpected xattrs
@@ -39,7 +63,7 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 			continue
 		}
 		// Only attempt to remove xattrs that match the filter
-		if xattrSelectFilter(name) {
+		if xattrSelectFilter(name) && xattrKept(name) {
 			if err := removexattr(path, name); err != nil {
 				errs = append(errs, err)
 			}
@@ -59,7 +83,9 @@ func nodeFillExtendedAttributes(node *data.Node, path string, ignoreListError bo
 		return err
 	}
 	// BackOtter: stored in byte order of their names, as rustic-bko stores
-	// them, not in the order the file system lists them.
+	// them, not in the order the file system lists them; and only those
+	// kept.
+	xattrs = slices.DeleteFunc(xattrs, func(name string) bool { return !xattrKept(name) })
 	slices.Sort(xattrs)
 
 	node.ExtendedAttributes = make([]data.ExtendedAttribute, 0, len(xattrs))
