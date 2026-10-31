@@ -4,9 +4,12 @@ package fs
 
 import (
 	"os"
+	"path/filepath"
+	"sync"
 	"syscall"
 
 	"github.com/restic/restic/internal/data"
+	"github.com/restic/restic/internal/debug"
 	"golang.org/x/sys/unix"
 )
 
@@ -16,7 +19,6 @@ const fileFlagsAttribute = data.TypeFreeBSDFileFlags
 const (
 	ufSettable = 0x0000ffff // the flags an owner may set
 	sfSettable = 0xffff0000 // the flags only root may set
-	ufArchive  = 0x00000800 // "uarch"
 	sfSnapshot = 0x00200000 // a UFS snapshot file
 )
 
@@ -24,21 +26,42 @@ const (
 // which leaves out SF_SNAPSHOT.
 const freebsdFileFlags = (ufSettable | sfSettable) &^ sfSnapshot
 
-func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
+func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error {
 	s, ok := fi.sys.(*syscall.Stat_t)
 	if !ok {
 		return nil
 	}
 	flags := s.Flags & freebsdFileFlags
-	// ZFS sets UF_ARCHIVE on every file it writes, as Windows does its
-	// archive bit.  On its own it would give nearly every file an attribute,
-	// and a restore onto ZFS sets it again anyway, so it's kept only along
-	// with other flags, which are set exactly as they were.
-	if flags&^ufArchive == 0 {
+	if !keptFreeBSDFileFlags(flags, isZFS(path, node.Type, s.Dev)) {
 		return nil
 	}
-	node.SetFileFlags(fileFlagsAttribute, flags)
+	// 0 too on ZFS: archive cleared (SetFileFlags would leave it out).
+	_ = node.SetGenericAttribute(fileFlagsAttribute, flags)
 	return nil
+}
+
+// zfsDevices caches, by device (st_dev), whether a file system is ZFS, for
+// the backup to ask statfs(2) once per file system.
+var zfsDevices sync.Map
+
+// isZFS tells whether the file at path, of type typ, on device dev, is on
+// ZFS.  statfs(2) follows symlinks, so for a symlink it asks about the
+// directory the symlink is in, which is on the same file system.
+func isZFS(path string, typ data.NodeType, dev uint64) bool {
+	if zfs, ok := zfsDevices.Load(dev); ok {
+		return zfs.(bool)
+	}
+	if typ == data.NodeTypeSymlink {
+		path = filepath.Dir(path)
+	}
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		debug.Log("statfs %v on device %#x: %v", path, dev, err)
+		return false
+	}
+	zfs := unix.ByteSliceToString(st.Fstypename[:]) == "zfs"
+	zfsDevices.Store(dev, zfs)
+	return zfs
 }
 
 func restoreFileFlags(path string, _ data.NodeType, flags uint32, _ []byte) error {

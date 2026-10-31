@@ -10,7 +10,13 @@ new restic release rather than merged.
 - Metadata that stock restic doesn't back up, stored as generic attributes
   with OS-prefixed names, so stock restic can still read and restore every
   snapshot (it warns once about the unknown attributes and skips them):
-  - `freebsd.file_flags`: FreeBSD's `chflags(1)` flags (`st_flags`).
+  - `freebsd.file_flags`: FreeBSD's `chflags(1)` flags (`st_flags`), all
+    but `SF_SNAPSHOT`.  On ZFS (statfs's `f_fstypename` `zfs`), which
+    gives every file it creates or writes to `uarch` (`UF_ARCHIVE`, the
+    DOS archive flag), only when they aren't `uarch` alone, and then even
+    when they are none: a file whose archive flag was cleared keeps that,
+    as 0, as with `linux.zfs_dos_flags`.  Elsewhere neither `uarch` alone
+    nor none is kept.  A restore sets whatever the attribute holds.
   - `linux.inode_flags`: the `chattr(1)` flags (`FS_IOC_GETFLAGS`), limited to
     those a user can set.
   - `freebsd.acl_access`, `freebsd.acl_default`: POSIX.1e ACLs (UFS mounted
