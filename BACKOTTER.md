@@ -15,8 +15,9 @@ new restic release rather than merged.
     gives every file it creates or writes to `uarch` (`UF_ARCHIVE`, the
     DOS archive flag), only when they aren't `uarch` alone, and then even
     when they are none: a file whose archive flag was cleared keeps that,
-    as 0, as with `linux.zfs_dos_flags`.  Elsewhere neither `uarch` alone
-    nor none is kept.  A restore sets whatever the attribute holds.
+    as 0, as with `linux.zfs_dos_flags`.  Elsewhere whenever there are
+    any, `uarch` alone too (no other file system sets it by itself), but
+    not none.  A restore sets whatever the attribute holds.
   - `linux.inode_flags`: the `chattr(1)` flags (`FS_IOC_GETFLAGS`), limited to
     those a user can set.
   - `freebsd.acl_access`, `freebsd.acl_default`: POSIX.1e ACLs (UFS mounted

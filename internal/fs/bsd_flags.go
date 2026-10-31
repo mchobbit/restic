@@ -30,11 +30,12 @@ const freebsdUFArchive = 0x00000800
 // when they are archive alone, as on every new or written file, so that a
 // tree of ordinary files gets no attribute; but when they are none at all,
 // since a file restored without the attribute gets archive back from its
-// contents' write (as linux.zfs_dos_flags on Linux).  Elsewhere neither
-// archive alone nor none is kept.
+// contents' write (as linux.zfs_dos_flags on Linux).  Elsewhere whenever
+// there are any, archive alone too, which no file system but ZFS sets by
+// itself.
 func keptFreeBSDFileFlags(flags uint32, zfs bool) bool {
 	if zfs {
 		return flags != freebsdUFArchive
 	}
-	return flags&^freebsdUFArchive != 0
+	return flags != 0
 }

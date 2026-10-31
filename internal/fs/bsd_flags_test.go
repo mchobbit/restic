@@ -37,11 +37,12 @@ func TestKeptFreeBSDFileFlags(t *testing.T) {
 		{ufHidden, true, true},
 		{ufHidden | freebsdUFArchive, true, true},
 		{ufReadonly | ufSystem, true, true},
-		// Elsewhere: neither archive alone nor none.
-		{freebsdUFArchive, false, false},
+		// Elsewhere: any, archive alone too, but not none.
+		{freebsdUFArchive, false, true},
 		{0, false, false},
 		{ufHidden, false, true},
 		{ufHidden | freebsdUFArchive, false, true},
+		{ufReadonly | ufSystem, false, true},
 	} {
 		rtest.Equals(t, test.kept, keptFreeBSDFileFlags(test.flags, test.zfs),
 			fmt.Sprintf("flags %#x, zfs %v", test.flags, test.zfs))
