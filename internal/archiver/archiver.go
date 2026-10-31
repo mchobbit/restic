@@ -104,6 +104,11 @@ type Archiver struct {
 	// Error is called for all errors that occur during backup.
 	Error ErrorFunc
 
+	// Warn is called with a warning about metadata a backup couldn't keep
+	// for a reason that isn't the file's (fs.BackupWarning), naming the
+	// file.  It isn't an error: the backup still succeeds.
+	Warn func(message string)
+
 	// CompleteItem is called for all files and dirs once they have been
 	// processed successfully. The parameter item contains the path as it will
 	// be in the snapshot after saving. s contains some statistics about this
@@ -211,6 +216,19 @@ func (arch *Archiver) error(item string, err error) error {
 	return errf
 }
 
+// warn calls arch.Warn with the warning w about item, if it is set.
+func (arch *Archiver) warn(item string, w error) {
+	msg := w.Error()
+	if !strings.Contains(msg, item) {
+		msg = fmt.Sprintf("%v: %v", item, msg)
+	}
+	if arch.Warn == nil {
+		debug.Log("warning: %v", msg)
+		return
+	}
+	arch.Warn(msg)
+}
+
 func (arch *Archiver) trackItem(item string, previous, current *data.Node, s ItemStats, d time.Duration) {
 	arch.CompleteItem(item, previous, current, s, d)
 
@@ -254,6 +272,10 @@ func (arch *Archiver) nodeFromFileInfo(snPath, filename string, meta ToNoder, ig
 	node, err := meta.ToNode(ignoreXattrListError, func(format string, args ...any) {
 		_ = arch.error(filename, fmt.Errorf(format, args...))
 	})
+	err, warnings := fs.SplitBackupWarnings(err)
+	for _, w := range warnings {
+		arch.warn(filename, w)
+	}
 	// node does not exist. This prevents all further processing for this file.
 	// If an error and a node are returned, then preserve as much data as possible (see below).
 	if err != nil && node == nil {

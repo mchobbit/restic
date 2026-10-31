@@ -660,6 +660,9 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts global.Options, te
 		}
 		return reterr
 	}
+	arch.Warn = func(message string) {
+		printer.E("Warning: %s\n", message)
+	}
 	arch.CompleteItem = progressReporter.CompleteItem
 	arch.StartFile = progressReporter.StartFile
 	arch.CompleteBlob = progressReporter.CompleteBlob

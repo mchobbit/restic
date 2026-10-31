@@ -2698,6 +2698,51 @@ func TestMetadataBackupErrorFiltering(t *testing.T) {
 	rtest.Assert(t, strings.Contains(err.Error(), "irregular"), "unexpected error %q does not warn about irregular file mode", err)
 }
 
+func TestMetadataBackupWarning(t *testing.T) {
+	tempdir := t.TempDir()
+	filename := filepath.Join(tempdir, "file")
+	repo := repository.TestRepository(t)
+
+	arch := New(repo, fs.Local{}, Options{})
+	var errs []error
+	arch.Error = func(item string, err error) error {
+		errs = append(errs, err)
+		return nil
+	}
+	var warnings []string
+	arch.Warn = func(message string) {
+		warnings = append(warnings, message)
+	}
+
+	// A warning alone (idmap offline on illumos) is no error: the node is
+	// kept, and the backup succeeds.
+	warning := &fs.BackupWarning{Msg: "idmap offline: SID owners not kept", Err: fmt.Errorf("idmap status -9993")}
+	noder := &mockToNoder{
+		node: &data.Node{Type: data.NodeTypeFile},
+		err:  errors.Join(nil, warning),
+	}
+	node, err := arch.nodeFromFileInfo("file", filename, noder, false)
+	rtest.OK(t, err)
+	rtest.Assert(t, node != nil, "node is missing")
+	rtest.Equals(t, 0, len(errs))
+	rtest.Equals(t, []string{filename + ": idmap offline: SID owners not kept: idmap status -9993"}, warnings)
+
+	// Joined with an error, the error is reported as before, without the
+	// warning.
+	warnings = nil
+	noder = &mockToNoder{
+		node: &data.Node{Type: data.NodeTypeFile},
+		err:  errors.Join(fmt.Errorf("acl failed"), warning),
+	}
+	node, err = arch.nodeFromFileInfo("file", filename, noder, false)
+	rtest.OK(t, err)
+	rtest.Assert(t, node != nil, "node is missing")
+	rtest.Equals(t, 1, len(errs))
+	rtest.Assert(t, strings.Contains(errs[0].Error(), "acl failed"), "unexpected error %v", errs[0])
+	rtest.Assert(t, !strings.Contains(errs[0].Error(), "idmap"), "warning in error %v", errs[0])
+	rtest.Equals(t, 1, len(warnings))
+}
+
 func TestIrregularFile(t *testing.T) {
 	files := TestDir{
 		"testfile": TestFile{

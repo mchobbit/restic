@@ -149,17 +149,24 @@ new restic release rather than merged.
   ACL entry that.  A SID idmap can't map gets nobody (60001), never the
   number the backup saw, which may be another SID's by now, with a warning
   once per attribute and the number of files at the end; that is not an
-  error.  A backup where idmap gives no SID reports it once, as an error
-  (`idmap offline: SID owners not kept`); with idmapd not running at all,
-  `stat(2)` already gives every ephemeral id as 60001, and nothing can be
-  kept.  So **svc:/system/idmap must be online** at backup and at restore:
-  BackOtter's illumos rescue system runs `svcadm enable -s idmap`.  restic
-  is built without cgo; it calls libidmap as it calls libc, through
-  `//go:cgo_import_dynamic` and the runtime's `sysvicall6`, so the illumos
-  binary needs `libidmap.so.1` (in every illumos system's `/usr/lib`) to
-  start.  The imports' names start with `libc_` whatever their library:
-  only for those does the Go assembler address them absolutely, as
-  dynamic imports must be on illumos (`useAbs` in `cmd/internal/obj/x86`).
+  error.  A backup where idmap gives no SID warns once
+  (`Warning: <file>: idmap offline: SID owners not kept: ...`), keeps the
+  numbers alone, and still succeeds (exit 0), as rustic-bko does; with
+  idmapd not running at all, `stat(2)` already gives every ephemeral id
+  as 60001, and nothing can be kept.  So **svc:/system/idmap must be
+  online** at backup and at restore: BackOtter's illumos rescue system
+  should run `svcadm enable -s idmap`.
+- **libidmap on illumos.**  restic is built without cgo; it calls libidmap
+  as it calls libc, through `//go:cgo_import_dynamic` and the runtime's
+  `sysvicall6`.  So the illumos binary links `libidmap.so.1` at load time:
+  the run-time linker loads it when restic starts, and restic won't start
+  without it.  That is no limit in practice: every illumos system has it
+  in `/usr/lib` (`/usr/lib/64` for 64-bit), as part of its core
+  (`system/library`), whether idmapd runs or not.  (rustic-bko opens it
+  with `dlopen(3)` when first needed instead.)  The imports' names start
+  with `libc_` whatever their library: only for those does the Go
+  assembler address them absolutely, as dynamic imports must be on
+  illumos (`useAbs` in `cmd/internal/obj/x86`).
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
   metadata, as it does everything below it; stock restic leaves the target
   as it was, so a restored file system's root keeps mkfs's mode and has no

@@ -72,16 +72,50 @@ func IsWarning(err error) bool {
 		errors.As(err, &malformed)
 }
 
+// BackupWarning is metadata a backup couldn't keep for a reason that isn't
+// the file's: on illumos, the SIDs of ephemeral owners, groups and ACL
+// entries when idmap gives none (idmapd isn't running, say).  The fs
+// package gives it once per backup; the archiver prints it as a warning,
+// and the backup still succeeds.
+type BackupWarning struct {
+	Msg string
+	Err error
+}
+
+func (w *BackupWarning) Error() string {
+	return fmt.Sprintf("%v: %v", w.Msg, w.Err)
+}
+
+func (w *BackupWarning) Unwrap() error {
+	return w.Err
+}
+
 // SplitWarnings splits err, which may join several (errors.Join), into the
 // warnings in it (IsWarning) and the rest.
 func SplitWarnings(err error) (rest error, warnings []error) {
+	return splitErrors(err, IsWarning)
+}
+
+// SplitBackupWarnings splits err, from reading a file's metadata for a
+// backup, which may join several (errors.Join), into the BackupWarnings in
+// it and the rest.
+func SplitBackupWarnings(err error) (rest error, warnings []error) {
+	return splitErrors(err, func(err error) bool {
+		var w *BackupWarning
+		return errors.As(err, &w)
+	})
+}
+
+// splitErrors splits err, which may join several (errors.Join), into those
+// in it that warning picks and the rest.
+func splitErrors(err error, warning func(error) bool) (rest error, warnings []error) {
 	if err == nil {
 		return nil, nil
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
 		var errs []error
 		for _, e := range joined.Unwrap() {
-			r, w := SplitWarnings(e)
+			r, w := splitErrors(e, warning)
 			if r != nil {
 				errs = append(errs, r)
 			}
@@ -89,7 +123,7 @@ func SplitWarnings(err error) (rest error, warnings []error) {
 		}
 		return errors.Join(errs...), warnings
 	}
-	if IsWarning(err) {
+	if warning(err) {
 		return nil, []error{err}
 	}
 	return err, nil

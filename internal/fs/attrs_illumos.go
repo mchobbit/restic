@@ -3,7 +3,6 @@
 package fs
 
 import (
-	"fmt"
 	"os"
 	"sync/atomic"
 	"syscall"
@@ -211,9 +210,10 @@ func (s *sidNamer) aces(entries []aceEntry) {
 	}
 }
 
-// report returns idmap's failure for the file at path, the first time in
-// the backup: the number alone is kept, which a restore after a reboot may
-// give to another SID.
+// report returns idmap's failure for the file at path as a *BackupWarning,
+// the first time in the backup: the number alone is kept, which a restore
+// after a reboot may give to another SID.  It is a warning, not an error:
+// nothing about the file can help it.
 func (s *sidNamer) report(path string) error {
 	if s.err == nil {
 		return nil
@@ -222,7 +222,7 @@ func (s *sidNamer) report(path string) error {
 		debug.Log("SIDs of %v not kept: %v", path, s.err)
 		return nil
 	}
-	return fmt.Errorf("idmap offline: SID owners not kept: %w", s.err)
+	return &BackupWarning{Msg: "idmap offline: SID owners not kept", Err: s.err}
 }
 
 // nodeRestoreOSAttributes restores what goes before the mode on illumos:
