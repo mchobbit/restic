@@ -190,6 +190,11 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   changes the source's atimes where it can help it: on Linux every file
   opened for reading and every directory opened for listing gets
   `O_NOATIME`, retried without it on `EPERM` (neither its owner nor root).
+  Symlinks can't be spared: Linux's `readlink(2)` updates a symlink's atime
+  as any read does (always on `strictatime`), and has no `O_NOATIME`, so a
+  backup with either tool moves the atimes of the source's symlinks.  The
+  snapshot still has the old ones (the `lstat` comes before the
+  `readlink`), and a restore gives them back.
   Other systems have no `O_NOATIME`, and there both tools update atimes the
   same way.  `rewrite` keeps the stored atimes.  `restore --verify` reads
   the restored files with `O_NOATIME`, so it doesn't undo their atimes.
