@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/restic/chunker"
 	"github.com/restic/restic/internal/data"
+	"github.com/restic/restic/internal/fs"
 	"github.com/restic/restic/internal/repository"
 	rtest "github.com/restic/restic/internal/test"
 )
@@ -72,4 +74,73 @@ func TestRestorerSparseMarkerExistingTarget(t *testing.T) {
 			rtest.Assert(t, string(restored) == content, "wrong content restored over a %v", test.name)
 		})
 	}
+}
+
+// A file restored sparse gets every all-zero block of the file system wholly
+// inside one of its blobs as a hole, not only each blob's leading zeros: it
+// takes no more blocks than the blocks its blobs' data touch, give or take
+// the file system's own.
+func TestRestorerSparseBlocks(t *testing.T) {
+	const mib = 1 << 20
+	part := func(n int, data map[int]string) string {
+		p := make([]byte, n)
+		for off, s := range data {
+			copy(p[off:], s)
+		}
+		return string(p)
+	}
+	parts := []string{
+		part(5000, map[int]string{0: "start"}),
+		part(mib+13, map[int]string{300000: "in the middle"}),
+		part(chunker.MinSize, nil),
+		part(2*mib, map[int]string{2*mib - 1: "!"}),
+		part(777777, map[int]string{0: "head", 777777 - 4: "tail"}),
+	}
+	content := strings.Join(parts, "")
+	markSparse := func(_ *FileAttributes, _ bool) map[data.GenericAttributeType]json.RawMessage {
+		return map[data.GenericAttributeType]json.RawMessage{data.TypeUnixSparse: json.RawMessage(`true`)}
+	}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{"file": File{DataParts: parts}},
+	}, markSparse)
+
+	dst := rtest.TempDir(t)
+	res := NewRestorer(repo, sn, Options{})
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	path := filepath.Join(dst, "file")
+	restored, err := os.ReadFile(path)
+	rtest.OK(t, err)
+	rtest.Assert(t, string(restored) == content, "wrong content restored")
+
+	f, err := os.Open(path)
+	rtest.OK(t, err)
+	bs := fs.HoleBlockSize(f)
+	rtest.OK(t, f.Close())
+	// the blocks writeSparse writes into
+	touched := map[int64]bool{}
+	var offset int64
+	for _, p := range parts {
+		_, err := writeSparse(func(q []byte, off int64) (int, error) {
+			for b := off / bs; b <= (off+int64(len(q))-1)/bs; b++ {
+				touched[b] = true
+			}
+			return len(q), nil
+		}, []byte(p), offset, bs)
+		rtest.OK(t, err)
+		offset += int64(len(p))
+	}
+	want := int64(len(touched)) * bs
+	got := getBlockCount(t, path) * 512
+	t.Logf("%d bytes restored in %d bytes of blocks, %d blocks of %d touched (%d bytes)", len(content), got, len(touched), bs, want)
+
+	probe := filepath.Join(dst, "probe")
+	rtest.OK(t, os.WriteFile(probe, nil, 0o600))
+	rtest.OK(t, os.Truncate(probe, mib))
+	if getBlockCount(t, probe) != 0 {
+		return // a file system without holes
+	}
+	// some slack for the file system's own blocks (extent trees, ...)
+	rtest.Assert(t, got <= want+64<<10, "%d bytes allocated, more than the %d written", got, want)
 }

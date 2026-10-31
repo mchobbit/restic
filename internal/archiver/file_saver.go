@@ -161,12 +161,15 @@ func (s *fileSaver) saveFile(ctx context.Context, chnker *chunker.Chunker, snPat
 		return
 	}
 
-	// reuse the chunker
-	chnker.Reset(f, s.pol)
+	// reuse the chunker; a file with holes is read by its data extents
+	// (BackOtter), which gives the same bytes, so the same chunks
+	chnker.Reset(fs.SkipHoles(f, node), s.pol)
 
 	node.Content = []restic.ID{}
 	node.Size = 0
 	var idx int
+	// BackOtter: the IDs of the file's all-zero chunks, by length
+	zeroIDs := map[int]restic.ID{}
 	for {
 		buf := s.saveFilePool.Get()
 		chunk, err := chnker.Next(buf.Data)
@@ -199,7 +202,7 @@ func (s *fileSaver) saveFile(ctx context.Context, chnker *chunker.Chunker, snPat
 		node.Content = append(node.Content, restic.ID{})
 		lock.Unlock()
 
-		s.uploader.SaveBlobAsync(ctx, restic.DataBlob, buf.Data, restic.ID{}, false, func(newID restic.ID, known bool, sizeInRepo int, err error) {
+		s.uploader.SaveBlobAsync(ctx, restic.DataBlob, buf.Data, zeroChunkID(buf.Data, zeroIDs), false, func(newID restic.ID, known bool, sizeInRepo int, err error) {
 			defer buf.Release()
 			if err != nil {
 				completeError(err)
@@ -273,4 +276,21 @@ func (s *fileSaver) worker(ctx context.Context, jobs <-chan saveFileJob) {
 			close(job.ch)
 		})
 	}
+}
+
+// zeroChunkID returns the ID of chunk if it is all zeros, which it hashes
+// once for each length, keeping the IDs in ids (BackOtter: a file's holes
+// give many such chunks, all of the chunker's minimum size); the same bytes,
+// the same ID.  Of any other chunk it returns the null ID, for the uploader
+// to hash it.
+func zeroChunkID(chunk []byte, ids map[int]restic.ID) restic.ID {
+	if restic.ZeroPrefixLen(chunk) != len(chunk) {
+		return restic.ID{}
+	}
+	id, ok := ids[len(chunk)]
+	if !ok {
+		id = restic.Hash(chunk)
+		ids[len(chunk)] = id
+	}
+	return id
 }

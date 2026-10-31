@@ -255,7 +255,7 @@ new restic release rather than merged.
 ## Rules shared with rustic-bko
 
 rustic-bko's BACKOTTER.md states the same rules, in the same words where it
-can.  S1 to S11 are their numbers in BackOtter's plan.
+can.  S1 to S12 are their numbers in BackOtter's plan.
 
 - **S1 Access times.**  Backup stores each file's and directory's real atime
   by default; `--with-atime=false` stores the mtime in its place, as stock
@@ -305,9 +305,9 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   both tools alike: a file of up to 512 bytes, kept in its inode (0
   blocks), a compressed one (LZ4 by default) and runs of zeros, which
   HAMMER2 doesn't store.  That does no harm: such a file is restored sparse
-  (S4), which writes every byte of it but each chunk's leading zeros, so it
-  comes back the same, only with holes where those zeros were (HAMMER2
-  itself stores no zeros anyway).
+  (S4), which writes every byte of it but the blocks of zeros inside each
+  chunk, so it comes back the same, only with holes where those zeros were
+  (HAMMER2 itself stores no zeros anyway).
 
   A sparse file gets `"unix.sparse": true`.  On restore, `false`, no
   attribute or a malformed one (S9) means "not marked".
@@ -323,11 +323,19 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   goes into a new, empty file: nothing was at its target path when the
   restore queued it, or something other than a regular file, which restic
   always replaces with a new file.  A file restored sparse is sized with
-  `ftruncate`, without preallocation, and of each of its chunks the longest
-  run of zeros at the start is left as a hole (a chunk of zeros is not
-  written at all), the rest written.  Should such a file turn out to have
-  data when it is opened (a race), it is truncated to 0 first, so that no
-  hole sits over old bytes.
+  `ftruncate`, without preallocation, and then each of its chunks is
+  written but for every block of B bytes, aligned to the file offset, that
+  lies wholly inside the chunk and is all zeros: that is left as a hole.
+  The rest is written, partial blocks at the chunk's ends included, zeros
+  or not (the other part of such a block is another chunk's).  B is the
+  target file system's block size (`fstatfs`'s or `fstatvfs`'s `f_bsize`:
+  4096 on ext4, XFS and tmpfs, the record size on ZFS on Linux and illumos),
+  else the file's `st_blksize`, and at least 4096; 4096 when neither is
+  known (and on Windows).  A file restored sparse so takes at most the
+  source's blocks plus one per chunk boundary.  Should such a file turn out
+  to have data when it is opened (a race), it is truncated to 0 first, so
+  that no hole sits over old bytes.  Before this rule, only each chunk's
+  longest run of zeros at the start was left as a hole.
 - **S5 Dense restore.**  Every other file is fully allocated.  A new file is
   preallocated to its full length when it is first sized, where the OS can
   (Linux `fallocate(fd, 0, 0, size)`, macOS `F_PREALLOCATE`; elsewhere
@@ -394,6 +402,29 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   `O_DIRECTORY` for directories) and checked with `fstat`: a file of another
   type than its node's gets no ioctls, nor, at backup, one that isn't the
   inode the lstat saw.
+- **S12 Backup doesn't read holes.**  A regular file marked sparse (S3)
+  on a system with the SEEK_HOLE probe (Linux and Android, FreeBSD, macOS,
+  illumos) is read by its data extents: from the current offset,
+  `lseek(SEEK_DATA)` finds the next data and `lseek(SEEK_HOLE)` its end,
+  only the data is read (`pread(2)`), and the chunker is given zeros for
+  the holes without reading them.  `ENXIO` from `SEEK_DATA` means a hole up
+  to the end of file (the size `fstat` gives before `SEEK_DATA`, or after
+  it if smaller, so that data appended meanwhile isn't taken for a hole),
+  or the end itself; any other `lseek` error, and every file elsewhere, is
+  read plainly from there on, up to whatever end of file a read finds.  The
+  bytes the chunker gets are exactly those plain reading gives, so chunks,
+  blob IDs, trees and snapshots are bit-for-bit what they were before this
+  rule.  A file that grows or shrinks while it is read gives what plain
+  reading would, but for a hole already found, which gives zeros even if
+  data was written there since (as if it had been read before the write):
+  no error, no torn chunk.  Each all-zero chunk (holes give many, all of
+  the chunker's minimum size), of any file, is hashed once per file and
+  length: the same bytes give the same ID.  The rolling hash isn't skipped
+  over long zero runs: all-zero data already gives a boundary at the
+  chunker's minimum size, with no rolling over its bytes.  Should a file
+  system misreport its holes (`SEEK_DATA` calling data a hole), the
+  snapshot would have zeros there, as `cp` and every other hole-aware
+  reader would.
 
 ## Building
 

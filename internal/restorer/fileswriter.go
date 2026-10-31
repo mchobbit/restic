@@ -32,8 +32,9 @@ type filesWriterBucket struct {
 
 type partialFile struct {
 	*os.File
-	users  int // Reference count.
-	sparse bool
+	users     int // Reference count.
+	sparse    bool
+	blockSize int64 // of the holes in a sparse file (fs.HoleBlockSize)
 }
 
 func newFilesWriter(count int, allowRecursiveDelete bool) *filesWriter {
@@ -234,6 +235,9 @@ func (w *filesWriter) writeToFile(path string, blob []byte, offset int64, create
 		}
 
 		wr := &partialFile{File: f, users: 1, sparse: sparse}
+		if sparse {
+			wr.blockSize = fs.HoleBlockSize(f)
+		}
 		bucket.files[path] = wr
 
 		return wr, nil

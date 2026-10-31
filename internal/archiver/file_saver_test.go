@@ -11,6 +11,7 @@ import (
 	"github.com/restic/chunker"
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/fs"
+	"github.com/restic/restic/internal/restic"
 	"github.com/restic/restic/internal/test"
 	"golang.org/x/sync/errgroup"
 )
@@ -87,4 +88,24 @@ func TestFileSaver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The IDs of all-zero chunks, kept, are their hashes all the same, and
+// other chunks are left to the uploader to hash (BackOtter).
+func TestZeroChunkID(t *testing.T) {
+	almostEnd := make([]byte, 4096)
+	almostEnd[4095] = 1
+	almostStart := make([]byte, 4096)
+	almostStart[0] = 1
+	ids := map[int]restic.ID{}
+	for i := 0; i < 2; i++ {
+		for _, chunk := range [][]byte{nil, {0}, {1}, make([]byte, 4096), make([]byte, chunker.MinSize), almostEnd, almostStart} {
+			want := restic.Hash(chunk)
+			if restic.ZeroPrefixLen(chunk) != len(chunk) {
+				want = restic.ID{}
+			}
+			test.Equals(t, want, zeroChunkID(chunk, ids))
+		}
+	}
+	test.Equals(t, 4, len(ids))
 }

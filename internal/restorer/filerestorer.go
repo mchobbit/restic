@@ -142,8 +142,8 @@ func (r *fileRestorer) restoreFiles(ctx context.Context) error {
 		fileBlobs := file.blobs.(restic.IDs)
 		largeFile := len(fileBlobs) > largeFileBlobCount
 		// BackOtter: sparse or not is decided per file, whatever its blobs:
-		// a sparse file gets each blob's leading zeros as a hole
-		// (partialFile.WriteAt).
+		// a sparse file gets each blob's all-zero file system blocks as
+		// holes (partialFile.WriteAt).
 		file.sparse = (r.sparse || file.holes) && file.fresh
 		var packsMap map[restic.ID][]fileBlobInfo
 		if largeFile {
