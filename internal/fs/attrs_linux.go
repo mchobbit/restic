@@ -4,6 +4,9 @@ package fs
 
 import (
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/restic/restic/internal/data"
@@ -12,8 +15,9 @@ import (
 )
 
 // Linux metadata that restic otherwise misses, besides the inode flags
-// (flags_linux.go): a file's project ID, which project quotas on XFS, ext4
-// and f2fs count its blocks against (chattr -p, xfs_quota project -s).
+// (flags_linux.go): a file's project ID, which project quotas on XFS, ext4,
+// f2fs and bcachefs count its blocks against (chattr -p, xfs_quota project
+// -s).
 // Without it a restored tree is counted against project 0, and a directory
 // with FS_PROJINHERIT_FL hands project 0 to the files created in it.
 
@@ -45,16 +49,85 @@ func ioctlFsxattr(fd int, req uint, fsx *fsxattr) error {
 	return nil
 }
 
+// bcachefsSuperMagic is BCACHEFS_SUPER_MAGIC, statfs(2)'s f_type on
+// bcachefs.
+const bcachefsSuperMagic = 0xca451a4e
+
+// bcachefsProject is the extended attribute that shows a bcachefs file's
+// project ID.
+const bcachefsProject = bcachefsEffective + "project"
+
+// fsTypes caches, by device (st_dev), a file system's statfs(2) f_type, for
+// the backup to ask fstatfs(2) once per file system.
+var fsTypes sync.Map
+
+// isOn tells whether the file open as fd, on device dev, is on the file
+// system whose statfs(2) f_type is magic.
+func isOn(fd int, dev uint64, magic uint32) bool {
+	if typ, ok := fsTypes.Load(dev); ok {
+		return typ.(uint32) == magic
+	}
+	var st unix.Statfs_t
+	if err := unix.Fstatfs(fd, &st); err != nil {
+		debug.Log("fstatfs on device %#x: %v", dev, err)
+		return false
+	}
+	typ := uint32(st.Type)
+	fsTypes.Store(dev, typ)
+	return typ == magic
+}
+
+// isBcachefsFd tells whether the file open as fd is on bcachefs, without
+// the cache: for a restore, which has no device number at hand.
+func isBcachefsFd(fd int) bool {
+	var st unix.Statfs_t
+	return unix.Fstatfs(fd, &st) == nil && uint32(st.Type) == bcachefsSuperMagic
+}
+
+// fileProjectID returns the project ID of the file open as fd, whose
+// FS_IOC_FSGETXATTR gave projid.  bcachefs (Linux 6.12) gives there the ID
+// the file had when its inode was read in, 0 for one set since (chattr -p,
+// a restore), until it is read in again; the ID it has is in the extended
+// attribute bcachefs_effective.project, which is taken where there is one,
+// as rustic-bko does.
+func fileProjectID(fd int, projid uint32, bcachefs bool) uint32 {
+	if !bcachefs {
+		return projid
+	}
+	buf := make([]byte, 32)
+	n, err := unix.Fgetxattr(fd, bcachefsProject, buf)
+	if err != nil {
+		debug.Log("no %v: %v", bcachefsProject, err)
+		return projid
+	}
+	if id, ok := parseBcachefsProject(buf[:n]); ok {
+		return id
+	}
+	return projid
+}
+
+// parseBcachefsProject reads the value of bcachefs_effective.project, a
+// number in decimal, and whether it is one.
+func parseBcachefsProject(value []byte) (uint32, bool) {
+	s := strings.TrimSpace(strings.TrimRight(string(value), "\x00"))
+	id, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(id), true
+}
+
 // nodeFillProjectID records the project ID of the regular file or directory
-// open as fd, when it isn't 0.
-func nodeFillProjectID(node *data.Node, path string, fd int) {
+// open as fd, on device dev, when it isn't 0: on bcachefs, the one in
+// bcachefs_effective.project (fileProjectID).
+func nodeFillProjectID(node *data.Node, path string, fd int, dev uint64) {
 	var fsx fsxattr
 	if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &fsx); err != nil {
 		// A file system without project IDs (ENOTTY, EOPNOTSUPP, EINVAL).
 		debug.Log("no project ID for %v: %v", path, err)
 		return
 	}
-	node.SetProjectID(fsx.projid)
+	node.SetProjectID(fileProjectID(fd, fsx.projid, isOn(fd, dev, bcachefsSuperMagic)))
 }
 
 // nodeFillOSAttributes has nothing to add on Linux: nodeFillFileFlags reads
@@ -93,7 +166,7 @@ func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &fsx); err != nil {
 		return unsupported(&os.PathError{Op: "FS_IOC_FSGETXATTR", Path: path, Err: err})
 	}
-	if fsx.projid == id {
+	if fileProjectID(fd, fsx.projid, isBcachefsFd(fd)) == id {
 		return nil
 	}
 	fsx.projid = id

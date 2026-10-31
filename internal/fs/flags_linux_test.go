@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -267,4 +268,76 @@ func TestRestoreFileFlagsBtrfsCompression(t *testing.T) {
 			_ = exec.Command("chattr", "-i", path).Run()
 		}
 	}
+}
+
+// bcachefs_effective.project is a number in decimal; anything else isn't
+// taken, and FS_IOC_FSGETXATTR's ID stays.
+func TestParseBcachefsProject(t *testing.T) {
+	for value, want := range map[string]uint32{"42": 42, "42\n": 42, "42\x00": 42, " 7 ": 7, "0": 0, "4294967295": 4294967295} {
+		id, ok := parseBcachefsProject([]byte(value))
+		rtest.Assert(t, ok, "%q not read", value)
+		rtest.Equals(t, want, id)
+	}
+	for _, value := range []string{"", "x", "-1", "4294967296", "0x2a"} {
+		_, ok := parseBcachefsProject([]byte(value))
+		rtest.Assert(t, !ok, "%q read", value)
+	}
+	// Off bcachefs, FS_IOC_FSGETXATTR's ID, without a look at the file.
+	rtest.Equals(t, uint32(9), fileProjectID(-1, 9, false))
+	// No such attribute: FS_IOC_FSGETXATTR's ID.
+	rtest.Equals(t, uint32(9), fileProjectID(-1, 9, true))
+}
+
+// With root, on a loop bcachefs: a project ID set with chattr -p, which
+// FS_IOC_FSGETXATTR reports as 0 until a remount (Linux 6.12), is backed up
+// from bcachefs_effective.project, and a restore sets it.
+func TestNodeProjectIDBcachefs(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root, to mount a file system")
+	}
+	for _, cmd := range []string{"bcachefs", "chattr"} {
+		if _, err := exec.LookPath(cmd); err != nil {
+			t.Skipf("no %v", cmd)
+		}
+	}
+	tmp := rtest.TempDir(t)
+	img := filepath.Join(tmp, "bcachefs.img")
+	mnt := filepath.Join(tmp, "mnt")
+	rtest.OK(t, os.Mkdir(mnt, 0o755))
+	rtest.OK(t, os.WriteFile(img, nil, 0o600))
+	rtest.OK(t, os.Truncate(img, 256<<20))
+	if out, err := exec.Command("bcachefs", "format", "-q", img).CombinedOutput(); err != nil {
+		t.Skipf("bcachefs format: %v: %s", err, out)
+	}
+	if out, err := exec.Command("mount", "-t", "bcachefs", "-o", "loop", img, mnt).CombinedOutput(); err != nil {
+		t.Skipf("mount: %v: %s", err, out)
+	}
+	defer func() { _ = exec.Command("umount", mnt).Run() }()
+
+	path := filepath.Join(mnt, "file")
+	rtest.OK(t, os.WriteFile(path, []byte("data"), 0o600))
+	if out, err := exec.Command("chattr", "-p", "42", path).CombinedOutput(); err != nil {
+		t.Fatalf("chattr -p: %v: %s", err, out)
+	}
+	fi, err := os.Lstat(path)
+	rtest.OK(t, err)
+	node, err := nodeFromFileInfo(path, ExtendedStat(fi), false, t.Logf)
+	rtest.OK(t, err)
+	id, ok, err := node.ProjectID()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok, "no project ID: %v", node.GenericAttributes)
+	rtest.Equals(t, uint32(42), id)
+	for _, attr := range node.ExtendedAttributes {
+		rtest.Assert(t, !strings.HasPrefix(attr.Name, bcachefsEffective), "%v kept", attr.Name)
+	}
+
+	restored := filepath.Join(mnt, "restored")
+	rtest.OK(t, os.WriteFile(restored, []byte("data"), 0o600))
+	rtest.OK(t, nodeRestoreOSAttributes(node, restored))
+	buf := make([]byte, 32)
+	n, err := unix.Lgetxattr(restored, bcachefsProject, buf)
+	rtest.OK(t, err)
+	got, ok := parseBcachefsProject(buf[:n])
+	rtest.Assert(t, ok, "%v: %q", bcachefsProject, buf[:n])
+	rtest.Equals(t, uint32(42), got)
 }

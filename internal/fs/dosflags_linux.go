@@ -4,7 +4,6 @@ package fs
 
 import (
 	"os"
-	"sync"
 	"unsafe"
 
 	"github.com/restic/restic/internal/data"
@@ -64,23 +63,9 @@ func ioctlDosFlags(fd int, req uint, flags *uint64) error {
 	return nil
 }
 
-// zfsDevices caches, by device (st_dev), whether a file system is ZFS, for
-// the backup to ask fstatfs(2) once per file system.
-var zfsDevices sync.Map
-
 // isZFS tells whether the file open as fd, on device dev, is on ZFS.
 func isZFS(fd int, dev uint64) bool {
-	if zfs, ok := zfsDevices.Load(dev); ok {
-		return zfs.(bool)
-	}
-	var st unix.Statfs_t
-	if err := unix.Fstatfs(fd, &st); err != nil {
-		debug.Log("fstatfs on device %#x: %v", dev, err)
-		return false
-	}
-	zfs := uint32(st.Type) == zfsSuperMagic
-	zfsDevices.Store(dev, zfs)
-	return zfs
+	return isOn(fd, dev, zfsSuperMagic)
 }
 
 // keptZFSDosFlags returns those of dos, a file's ZFS DOS flags, that a node

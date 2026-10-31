@@ -75,11 +75,15 @@ new restic release rather than merged.
     (`noscache`, `nohistory` and the rest; DragonFly has no ACLs or
     extended attributes).
   - `linux.project_id`: a file's project ID (`chattr -p`), when it isn't 0.
-    Not on bcachefs (checked on Linux 6.12): there `chattr -p` sets one,
-    but `FS_IOC_FSGETXATTR` reports 0, so none is stored, and a bcachefs
-    project ID is lost without a word, in rustic-bko alike; accepted, as a
-    kernel quirk.  The project shows only as the extended attribute
-    `bcachefs_effective.project`, which neither tool keeps (below).
+    bcachefs (Linux 6.12) gives in `FS_IOC_FSGETXATTR` the ID a file had
+    when its inode was read in, 0 for one set since (`chattr -p`, a
+    restore) until it is read in again, and the ID it has in the extended
+    attribute `bcachefs_effective.project`: on bcachefs (statfs's `f_type`
+    `0xca451a4e`) that is read instead, where there is one, at backup and
+    by a restore to see whether the file has the ID already, as in
+    rustic-bko.  The restore sets it with `FS_IOC_FSSETXATTR`, as anywhere
+    (setting the attribute does nothing); the attribute itself isn't kept
+    (below).
   - `linux.zfs_dos_flags`: the DOS flags OpenZFS keeps on Linux
     (`ZFS_IOC_GETDOSFLAGS`), as a number: readonly, hidden, system,
     archive, nounlink, offline and sparse (mask `0x302f00000000`).
@@ -208,8 +212,9 @@ new restic release rather than merged.
 - bcachefs' `bcachefs_effective.*` extended attributes are neither backed
   up nor restored (nor removed from a restored file), as in rustic-bko:
   they show the options a file has, its own (`bcachefs.*`, which are kept)
-  or inherited from its directory, and its project ID, and setting one
-  succeeds but does nothing.  Stock restic keeps them.
+  or inherited from its directory, and its project ID (`linux.project_id`,
+  read from `bcachefs_effective.project`), and setting one succeeds but
+  does nothing.  Stock restic keeps them.
 - Times in nodes (and `unix.birthtime`, `illumos.xattr_meta`) are written
   in UTC with `Z`, as stock restic writes them; stock rustic writes the
   same instants with `+00:00`.  Both tools read either form (any offset),

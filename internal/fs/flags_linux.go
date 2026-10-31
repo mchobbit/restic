@@ -57,7 +57,7 @@ func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error
 		return nil
 	}
 	defer func() { _ = unix.Close(fd) }()
-	nodeFillProjectID(node, path, fd)
+	nodeFillProjectID(node, path, fd, fi.DeviceID)
 	nodeFillZFSDosFlags(node, path, fd, fi.DeviceID)
 	if node.Type == data.NodeTypeFile {
 		hole := func() (int64, error) {
