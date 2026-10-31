@@ -1,5 +1,11 @@
 package fs
 
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
 // illumos ACLs, as ZFS keeps them: NFSv4-style ACEs (ace_t in <sys/acl.h>),
 // and the rule illumos uses to tell a trivial ACL, one the mode says all of,
 // from one worth keeping.  Plain Go, so that it is tested on any OS; the
@@ -35,12 +41,46 @@ const (
 )
 
 // aceEntry is one ACE of an illumos ACL (ace_t), as restic keeps it: ids are
-// numeric, as the file's owner and group are.
+// numeric, as the file's owner and group are, but an ACE for a SID (an
+// ephemeral id, aceNamesSID) has the SID too, which a restore maps to the id
+// it has there.  Readers that don't know "sid" ignore it.
 type aceEntry struct {
 	Who   uint32 `json:"who"`
 	Mask  uint32 `json:"mask"`
 	Flags uint16 `json:"flags,omitempty"`
 	Type  uint16 `json:"type,omitempty"`
+	SID   string `json:"sid,omitempty"`
+}
+
+const (
+	// illumosMaxUID is MAXUID: the uids and gids above it are ephemeral,
+	// those idmap(8) hands out for SIDs (Windows users and groups, as the
+	// SMB server and ZFS keep them), and only for as long as it runs: after
+	// a reboot the same SID can get another one.
+	illumosMaxUID = 2147483647
+	// illumosNobody is UID_NOBODY and GID_NOBODY, what an id idmap can't
+	// map becomes.
+	illumosNobody = 60001
+)
+
+// aceNamesSID tells whether e is for a user or group (ACE_IDENTIFIER_GROUP)
+// that is a SID: not owner@, group@ or everyone@, and an ephemeral id.
+func aceNamesSID(e aceEntry) bool {
+	return e.Flags&(aceOwner|aceGroup|aceEveryone) == 0 && e.Who > illumosMaxUID
+}
+
+// splitSID splits a SID, such as S-1-5-21-1111-2222-3333-1001, at its last
+// dash into what idmap calls its prefix and its RID.
+func splitSID(sid string) (string, uint32, error) {
+	i := strings.LastIndexByte(sid, '-')
+	if i <= 0 || !strings.HasPrefix(sid, "S-") {
+		return "", 0, fmt.Errorf("malformed SID %q", sid)
+	}
+	rid, err := strconv.ParseUint(sid[i+1:], 10, 32)
+	if err != nil {
+		return "", 0, fmt.Errorf("malformed SID %q", sid)
+	}
+	return sid[:i], uint32(rid), nil
 }
 
 // aceIsTrivial is ace_trivial_common() from illumos' acl_common.c: whether an

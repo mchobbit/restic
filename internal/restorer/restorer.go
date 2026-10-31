@@ -413,11 +413,13 @@ func (res *Restorer) warnAboutAll(location string, err error) error {
 // warnAbout gives the warning err for location.  Metadata the target file
 // system doesn't support (fs.UnsupportedError) is a warning once per
 // attribute and bits, with the number of files at the end (warnTotals), and
-// a malformed attribute (data.MalformedAttributeError) once per attribute.
-// Neither is an error: the restore succeeds.  Other warnings
-// (fs.FlagsWarning) are given every time.
+// a malformed attribute (data.MalformedAttributeError) once per attribute,
+// as is a SID idmap couldn't map (fs.SIDWarning), with the number of files.
+// None is an error: the restore succeeds.  Other warnings (fs.FlagsWarning)
+// are given every time.
 func (res *Restorer) warnAbout(location string, err error) {
 	var unsupported *fs.UnsupportedError
+	var sid *fs.SIDWarning
 	var malformed *data.MalformedAttributeError
 	var key, text, msg string
 	counted := false
@@ -430,6 +432,10 @@ func (res *Restorer) warnAbout(location string, err error) {
 		text += " not supported by the target file system"
 		key, counted = text, true
 		msg = fmt.Sprintf("%v: %v: %v", location, text, unsupported.Err)
+	case errors.As(err, &sid):
+		text = fmt.Sprintf("%v: SIDs not mapped by idmap, nobody (60001) used", sid.Attr)
+		key, counted = text, true
+		msg = fmt.Sprintf("%v: %v: %v: %v", location, text, sid.SID, sid.Err)
 	case errors.As(err, &malformed):
 		text = fmt.Sprintf("ignoring malformed %v", malformed.Attr)
 		key = text

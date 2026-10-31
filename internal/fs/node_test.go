@@ -230,6 +230,13 @@ func TestNodeRestoreAt(t *testing.T) {
 				n3, err := meta.ToNode(true, t.Logf)
 				rtest.OK(t, err)
 				rtest.OK(t, meta.Close())
+				if runtime.GOOS == "illumos" {
+					// BackOtter: reading an extended attribute's value, as
+					// ToNode does, moves the atime illumos.xattr_meta keeps
+					// (illumos has no O_NOATIME).
+					delete(n2.GenericAttributes, data.TypeIllumosXattrMeta)
+					delete(n3.GenericAttributes, data.TypeIllumosXattrMeta)
+				}
 				rtest.Assert(t, n2.Equals(*n3), "unexpected node info mismatch %v", cmp.Diff(n2, n3))
 
 				rtest.Assert(t, test.Name == n2.Name,

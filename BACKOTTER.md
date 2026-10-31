@@ -18,12 +18,33 @@ new restic release rather than merged.
   - `freebsd.acl_nfs4`: NFSv4 ACLs (ZFS, UFS mounted `nfsv4acls`).
   - `freebsd.system_extattrs`: extended attributes in the system namespace
     (restic itself keeps only the user namespace on FreeBSD).
-  - `illumos.acl`: ZFS's ACLs on illumos (NFSv4-style ACEs).
+  - `illumos.acl`: ZFS's ACLs on illumos (NFSv4-style ACEs).  An entry for
+    a SID (a user or group with an ephemeral id, above 2147483647, and not
+    `owner@`, `group@` or `everyone@`) has the SID too, in `"sid"`, which
+    older readers ignore: `{"who":2147483650,"mask":1,"sid":"S-1-5-21-1111-2222-3333-1004"}`.
+  - `illumos.owner_sid`, `illumos.group_sid`: the SID a file's owner or
+    group is, as a string (`"S-1-5-21-1111-2222-3333-1001"`), when its uid
+    or gid is ephemeral.  See "SIDs on illumos" below.
   - `illumos.system_attributes`: illumos' system attributes (`chmod(1)`'s
     `S+v...`), as a mask, read and written through each file's
-    `SUNWattr_rw` view.  A restore writes a packed nvlist of the
-    attributes' booleans alone, never the view it read: that would set the
-    creation time too, which an immutable file refuses.
+    `SUNWattr_rw` view, whenever they aren't what ZFS gives a new file
+    (archive and av_modified), 0 included: a file whose archive or
+    av_modified was cleared keeps that.  A restore writes a packed nvlist
+    of the attributes' booleans alone, never the view it read: that would
+    set the creation time too, which an immutable file refuses.
+  - `illumos.xattr_meta`: the owner, group, mode, times and ACL of each of
+    a file's extended attributes (attribute files, `runat(1)`), by name:
+    `{"note":{"uid":1500,"gid":1501,"mode":416,"mtime":"2001-09-09T01:46:40.123456789Z","atime":"2001-09-09T01:46:40Z","acl":[...]}}`,
+    the times in the form of the node's, `"acl"` only when the ACL says
+    more than the mode, in `illumos.acl`'s form, SIDs included.  Written
+    for every file with extended attributes, before their values are read:
+    that read moves each attribute's atime (illumos has no `O_NOATIME`), so
+    the next backup keeps the time of this one's read, and a file with
+    extended attributes gets a new node in each snapshot.
+  - `illumos.zfs_project`: a file's ZFS project ID and whether it hands it
+    down (`zfs project -p 77 -s`), as `{"id":77,"inherit":true}`
+    (`"inherit"` left out when false), when it has either; regular files
+    and directories.
   - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
   - `netbsd.file_flags`: NetBSD's `chflags(1)` flags, but those the kernel
     manages (`SF_SNAPSHOT`, `SF_SNAPINVAL`, and `SF_LOG`, which marks the
@@ -97,7 +118,42 @@ new restic release rather than merged.
 - On illumos, extended attributes (named attribute files, `runat(1)`) are
   backed up and restored, through `openat(2)` with `O_XATTR`: stock restic's
   calls for them fail there with ENOTSUP, which it ignores.  The system
-  attribute views `SUNWattr_ro` and `SUNWattr_rw` are left out.
+  attribute views `SUNWattr_ro` and `SUNWattr_rw` are left out.  A restore
+  creates an attribute file with mode 0600, so that it is never readable by
+  others before it gets its own owner, mode, ACL and times
+  (`illumos.xattr_meta`), with `fchownat(2)`, `fchmodat(2)`, `facl(2)` and
+  `utimensat(2)` on the attribute directory, in that order, once the values
+  are written; an attribute the restore left out is left alone.  This goes
+  before the file's own times (writing an attribute file leaves them) and
+  flags.  A snapshot without the attribute restores as before.
+- illumos ZFS project IDs are restored with the extended attributes'
+  metadata, before the flags, as each node's own ID and inheritance,
+  whatever a file got from the directory it was created in; on another file
+  system than ZFS (`ENOTTY`) they are a warning (S10).  ZFS on illumos has no
+  `FS_IOC_FSGETXATTR`, but ioctls `'X'` 31 and 32 with an 8-byte struct of
+  the flags, of which only inheritance (`0x20000000`) is used, and the
+  project ID (checked on OmniOS r151058, with `truss` and `zfs project`).
+- **SIDs on illumos.**  A file owned by a SID (a Windows user or group, as
+  the SMB server and ZFS keep them) has an ephemeral uid or gid, which
+  idmapd hands out when asked and forgets at a reboot: restored as a number
+  after a reboot, it becomes another SID's or nobody (60001).  So backup asks
+  libidmap for the SID of every ephemeral owner, group and ACL entry and
+  keeps it, and restore asks it for the id the SID has now, and gives the
+  file that (a second `lchown(2)`, after the one with the numbers) and the
+  ACL entry that.  A SID idmap can't map gets nobody (60001), never the
+  number the backup saw, which may be another SID's by now, with a warning
+  once per attribute and the number of files at the end; that is not an
+  error.  A backup where idmap gives no SID reports it once, as an error
+  (`idmap offline: SID owners not kept`); with idmapd not running at all,
+  `stat(2)` already gives every ephemeral id as 60001, and nothing can be
+  kept.  So **svc:/system/idmap must be online** at backup and at restore:
+  BackOtter's illumos rescue system runs `svcadm enable -s idmap`.  restic
+  is built without cgo; it calls libidmap as it calls libc, through
+  `//go:cgo_import_dynamic` and the runtime's `sysvicall6`, so the illumos
+  binary needs `libidmap.so.1` (in every illumos system's `/usr/lib`) to
+  start.  The imports' names start with `libc_` whatever their library:
+  only for those does the Go assembler address them absolutely, as
+  dynamic imports must be on illumos (`useAbs` in `cmd/internal/obj/x86`).
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
   metadata, as it does everything below it; stock restic leaves the target
   as it was, so a restored file system's root keeps mkfs's mode and has no
@@ -212,7 +268,8 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   `linux.project_id`, `linux.zfs_dos_flags`, `unix.sparse`,
   `unix.birthtime` or a `*.file_flags` attribute that can't be decoded gets
   one warning per attribute per restore, and is ignored.  It is not an
-  error.
+  error.  (restic does the same for `illumos.owner_sid`,
+  `illumos.group_sid`, `illumos.xattr_meta` and `illumos.zfs_project`.)
 - **S10 Unsupported versus failed.**  When the target file system refuses an
   inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
   `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS

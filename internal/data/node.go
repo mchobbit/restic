@@ -89,6 +89,14 @@ const (
 	TypeLinuxZFSDosFlags GenericAttributeType = "linux.zfs_dos_flags"
 	// TypeUnixBirthTime is the GenericAttributeType used for storing a file's birth (creation) time on FreeBSD, NetBSD and illumos, as a time in UTC, in the form of the node's mtime.
 	TypeUnixBirthTime GenericAttributeType = "unix.birthtime"
+	// TypeIllumosOwnerSID is the GenericAttributeType used for storing the SID that an illumos file's owner is (an ephemeral uid, which idmap gives a SID for as long as it runs), as a string.
+	TypeIllumosOwnerSID GenericAttributeType = "illumos.owner_sid"
+	// TypeIllumosGroupSID is the GenericAttributeType used for storing the SID that an illumos file's group is, as TypeIllumosOwnerSID.
+	TypeIllumosGroupSID GenericAttributeType = "illumos.group_sid"
+	// TypeIllumosXattrMeta is the GenericAttributeType used for storing the owner, group, mode, times and ACL of each of an illumos file's extended attributes (named attribute files), by name.
+	TypeIllumosXattrMeta GenericAttributeType = "illumos.xattr_meta"
+	// TypeIllumosZFSProject is the GenericAttributeType used for storing an illumos file's ZFS project ID and whether it hands it down (zfs project -p ID -s), when it has either.
+	TypeIllumosZFSProject GenericAttributeType = "illumos.zfs_project"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -104,6 +112,7 @@ func init() {
 	storeGenericAttributeType(TypeDragonFlyFileFlags)
 	storeGenericAttributeType(TypeLinuxZFSDosFlags)
 	storeGenericAttributeType(TypeUnixBirthTime)
+	storeGenericAttributeType(TypeIllumosOwnerSID, TypeIllumosGroupSID, TypeIllumosXattrMeta, TypeIllumosZFSProject)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

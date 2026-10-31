@@ -380,7 +380,9 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	// the mode's permission bits from its entries.
 	if err := nodeRestoreACLs(node, path); err != nil {
 		debug.Log("error restoring ACLs for %v: %v", path, err)
-		if firsterr == nil {
+		err, w := SplitWarnings(err)
+		warnings = append(warnings, w...)
+		if err != nil && firsterr == nil {
 			firsterr = err
 		}
 	}

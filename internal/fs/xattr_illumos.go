@@ -55,6 +55,12 @@ func listxattr(path string) ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = dir.Close() }()
+	return attrNames(dir, path)
+}
+
+// attrNames returns the names of the extended attributes in dir, the
+// attribute directory of path, sorted.
+func attrNames(dir *os.File, path string) ([]string, error) {
 	names, err := dir.Readdirnames(-1)
 	if err != nil {
 		return nil, &os.PathError{Op: "readdir O_XATTR", Path: path, Err: err}
@@ -68,7 +74,9 @@ func isListxattrPermissionError(err error) bool {
 	return errors.Is(err, os.ErrPermission)
 }
 
-// openAttr opens the extended attribute name of the file at path.
+// openAttr opens the extended attribute name of the file at path.  A new
+// one is created with mode 0600, so that it is never readable by others
+// before its own mode is restored (xattrmeta_illumos.go).
 func openAttr(path, name string, how int) (*os.File, error) {
 	dir, err := attrDir(path)
 	if dir == nil {
@@ -78,11 +86,16 @@ func openAttr(path, name string, how int) (*os.File, error) {
 		return nil, err
 	}
 	defer func() { _ = dir.Close() }()
-	fd, err := unix.Openat(int(dir.Fd()), name, how|unix.O_CLOEXEC, 0o666)
+	fd, err := unix.Openat(int(dir.Fd()), name, how|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return nil, &os.PathError{Op: "openat " + name, Path: path, Err: err}
 	}
-	return os.NewFile(uintptr(fd), path+"/@"+name), nil
+	return os.NewFile(uintptr(fd), attrPath(path, name)), nil
+}
+
+// attrPath is how errors name the extended attribute name of path.
+func attrPath(path, name string) string {
+	return path + "/@" + name
 }
 
 // getxattr returns the value of the extended attribute name of path.

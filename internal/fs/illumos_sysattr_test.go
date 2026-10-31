@@ -172,3 +172,37 @@ func TestSysattrCrtime(t *testing.T) {
 	_, ok = sysattrCrtime(view)
 	rtest.Assert(t, !ok, "crtime found in a view without one")
 }
+
+func TestSysattrKept(t *testing.T) {
+	plain, err := nvlistValues(unhex(t, sunwattrPlain))
+	rtest.OK(t, err)
+	immutable, err := nvlistValues(unhex(t, sunwattrRW))
+	rtest.OK(t, err)
+	crtimeOnly, err := nvlistValues(unhex(t, nvlistCrtime))
+	rtest.OK(t, err)
+	// The plain view with every attribute cleared, archive and av_modified
+	// too (chmod S-varchive,av_modified).
+	cleared, err := nvlistValues(sysattrMaskNvlist(plain, 0))
+	rtest.OK(t, err)
+	noAVModified, err := nvlistValues(sysattrMaskNvlist(plain, illumosSysattrBits["archive"]))
+	rtest.OK(t, err)
+
+	for _, test := range []struct {
+		name string
+		view map[string]nvValue
+		mask uint32
+		kept bool
+	}{
+		{"new file", plain, illumosSysattrAutomatic, false},
+		{"immutable, nodump", immutable, illumosSysattrBits["immutable"] | illumosSysattrBits["nodump"] | illumosSysattrAutomatic, true},
+		{"archive and av_modified cleared", cleared, 0, true},
+		{"av_modified cleared", noAVModified, illumosSysattrBits["archive"], true},
+		{"no attributes in the view", crtimeOnly, 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			mask, kept := sysattrKept(test.view)
+			rtest.Equals(t, test.mask, mask)
+			rtest.Equals(t, test.kept, kept)
+		})
+	}
+}

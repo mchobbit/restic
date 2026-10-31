@@ -3,7 +3,6 @@
 package fs
 
 import (
-	"io"
 	"os"
 
 	"github.com/restic/restic/internal/data"
@@ -60,19 +59,29 @@ func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error 
 	if crtime, ok := sysattrCrtime(view); ok {
 		node.SetBirthTime(crtime)
 	}
-	if mask := sysattrMask(view); mask&^illumosSysattrAutomatic != 0 {
-		node.SetFileFlags(fileFlagsAttribute, mask)
+	if mask, ok := sysattrKept(view); ok {
+		// 0 too, unlike file flags elsewhere (SetFileFlags).
+		_ = node.SetGenericAttribute(fileFlagsAttribute, mask)
 	}
 	return nil
 }
 
-// readSysattrs reads the attributes in f, the SUNWattr_rw view of path.
+// readSysattrs reads the attributes in f, the SUNWattr_rw view of path, in
+// one read(2): illumos packs the view afresh for each read, from its start
+// whatever the offset, so io.ReadAll's second read, after 512 bytes, gave
+// the start again for a view any longer (728 bytes for a file owned by a
+// SID).  fstat(2) gives the view's size; the read may get more than that.
 func readSysattrs(f *os.File, path string) (map[string]nvValue, error) {
-	buf, err := io.ReadAll(f)
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, &os.PathError{Op: "fstat SUNWattr_rw", Path: path, Err: err}
+	}
+	buf := make([]byte, max(fi.Size(), 0)+4096)
+	n, err := f.Read(buf)
 	if err != nil {
 		return nil, &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
 	}
-	view, err := nvlistValues(buf)
+	view, err := nvlistValues(buf[:n])
 	if err != nil {
 		return nil, &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
 	}

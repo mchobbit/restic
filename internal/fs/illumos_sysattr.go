@@ -36,8 +36,9 @@ var illumosSysattrBits = map[string]uint32{
 	"sparse":         1 << 11,
 }
 
-// ZFS sets these two on every file it writes, as Windows does its archive
-// bit; on their own they're no reason to keep a file's attributes.
+// ZFS sets these two on every file it creates or writes to, as Windows does
+// its archive bit; on their own they're no reason to keep a file's
+// attributes.
 const illumosSysattrAutomatic = 1<<3 | 1<<9 // archive, av_modified
 
 const (
@@ -186,6 +187,22 @@ func sysattrMask(view map[string]nvValue) uint32 {
 		}
 	}
 	return mask
+}
+
+// sysattrKept returns the mask of the system attributes in a SUNWattr_rw
+// view, and whether to keep it: whether it isn't what a new file gets, the
+// automatic attributes the view has.  So a mask of 0 is kept where the view
+// has them, a file whose archive and av_modified were cleared; a restore
+// would set them again.
+func sysattrKept(view map[string]nvValue) (uint32, bool) {
+	var automatic uint32
+	for name, bit := range illumosSysattrBits {
+		if v, ok := view[name]; ok && v.typ == dataTypeBooleanValue && bit&illumosSysattrAutomatic != 0 {
+			automatic |= bit
+		}
+	}
+	mask := sysattrMask(view)
+	return mask, mask != automatic
 }
 
 // sysattrMaskNvlist returns the nvlist that sets the system attributes to
