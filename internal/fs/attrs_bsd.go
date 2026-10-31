@@ -269,6 +269,11 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		}
 		set = true
 		if err := setACL(path, aclType, acl); err != nil {
+			if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENOTSUP) {
+				// A file system without ACLs (NetBSD's FFSv1 and plain
+				// FFSv2, UFS mounted without them): a warning (SPEC2 7.1).
+				err = &UnsupportedError{Attr: typ, Err: err}
+			}
 			errs = append(errs, err)
 			if failed != nil {
 				failed(acl)

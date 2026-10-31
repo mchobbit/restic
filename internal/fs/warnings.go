@@ -11,7 +11,9 @@ import (
 
 // UnsupportedError is metadata that the target file system can't hold: an
 // inode flag, file flag, ZFS DOS flag or project ID refused with ENOTTY,
-// EOPNOTSUPP or EINVAL, or ZFS DOS flags for a file system that isn't ZFS.  The restorer warns about it once per attribute and bits, and
+// EOPNOTSUPP or EINVAL, a FreeBSD or NetBSD ACL refused with EOPNOTSUPP, or
+// ZFS DOS flags for a file system that isn't ZFS.  The restorer warns about
+// it once per attribute and bits, and
 // carries on: it is not a failed restore.  Every other failure stays an
 // error.
 type UnsupportedError struct {
