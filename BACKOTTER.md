@@ -372,7 +372,14 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
 
 Builds without the `selfupdate` tag, so there is no `self-update` command to
 replace this build with stock restic.  Binaries go to `dist/`, named
-`restic-backotter-VERSION-GOOS-GOARCH`.
+`restic-backotter-VERSION-GOOS-GOARCH`, and `dist/restic-commit` says what
+they were built from: the commit (`RESTIC_COMMIT` names it for a copy of the
+tree without `.git`, and a tree with changes says so), a digest of the Go
+sources (every `.go` file, `go.mod` and `go.sum`, by path and content), Go's
+version, and when and where.  The digest tells a build made from a stale
+copy of the tree, whatever `RESTIC_COMMIT` says:
+
+    ./build-backotter.sh --source-digest    # in the checkout; needs no Go
 
 ## Moving to a new restic release
 
