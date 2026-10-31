@@ -3,6 +3,7 @@
 package fs
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"slices"
@@ -233,12 +234,17 @@ func nodeRestoreOSAttributes(node *data.Node, path string) error {
 
 // nodeRestoreACLs restores the ACLs.  It runs after the mode is set: chmod(2)
 // rewrites an NFSv4 ACL (ZFS discards it), and setting an ACL sets the
-// mode's permission bits from its entries.
+// mode's permission bits from its entries.  It also runs after the times are
+// set, and on NetBSD setting an ACL sets the mtime to the current time
+// (tested on FFSv2ea: setfacl -m on a file, -d on a directory, -h on a
+// symlink, POSIX.1e and NFSv4), so there the atime and mtime are set again
+// after the ACLs.  The birth time, which a later mtime leaves, stays.
 func nodeRestoreACLs(node *data.Node, path string) error {
 	if node.Type == data.NodeTypeSymlink && !osACLs.symlinkACLs {
 		return nil
 	}
 	var errs []error
+	set := false
 	restore := func(typ data.GenericAttributeType, aclType int, failed func(acl []aclEntry)) {
 		var acl []aclEntry
 		ok, err := node.GenericAttribute(typ, &acl)
@@ -249,6 +255,7 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		if !ok {
 			return
 		}
+		set = true
 		if err := setACL(path, aclType, acl); err != nil {
 			errs = append(errs, err)
 			if failed != nil {
@@ -271,5 +278,11 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		}
 	})
 	restore(osACLs.aclDefault, aclTypeDefault, nil)
+	if set && osACLs.aclSetsMtime {
+		err := utimesNano(path, node.AccessTime.UnixNano(), node.ModTime.UnixNano(), node.Type)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to restore timestamp of %q: %w", path, err))
+		}
+	}
 	return errors.Join(errs...)
 }

@@ -66,12 +66,13 @@ type aclEntry struct {
 // bsdACLSystem is what differs between the systems with FreeBSD's ACLs and
 // extended attributes: the numbers of the system calls x/sys/unix doesn't
 // have for all of them, the pathconf(2) names, whether a symlink has ACLs of
-// its own, and the generic attributes they are kept in.  The JSON is the
-// same.
+// its own, whether setting an ACL sets the file's mtime, and the generic
+// attributes they are kept in.  The JSON is the same.
 type bsdACLSystem struct {
 	sysACLGetLink, sysACLSetLink, sysLpathconf uintptr // <sys/syscall.h>
 	pcACLExtended, pcACLNFS4                   int     // <sys/unistd.h>
 	symlinkACLs                                bool
+	aclSetsMtime                               bool
 
 	systemExtattrs, aclAccess, aclDefault, aclNFS4 data.GenericAttributeType
 }
@@ -89,6 +90,7 @@ var netbsdACLs = bsdACLSystem{
 	sysACLGetLink: 487, sysACLSetLink: 488, sysLpathconf: 499,
 	pcACLExtended: 14, pcACLNFS4: 17,
 	symlinkACLs:    true, // setfacl -h works on FFSv2ea
+	aclSetsMtime:   true, // on FFSv2ea, as setting an extended attribute does
 	systemExtattrs: data.TypeNetBSDSystemExtattrs,
 	aclAccess:      data.TypeNetBSDACLAccess,
 	aclDefault:     data.TypeNetBSDACLDefault,
