@@ -43,6 +43,8 @@ func sysattrView(path string, typ data.NodeType, write bool) (*os.File, error) {
 	return os.NewFile(uintptr(vfd), path+"/SUNWattr_rw"), nil
 }
 
+// nodeFillFileFlags records the system attributes of a regular file or
+// directory, and its creation time (unix.birthtime), from the same view.
 func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error {
 	f, err := sysattrView(path, node.Type, false)
 	if err != nil {
@@ -51,36 +53,46 @@ func nodeFillFileFlags(node *data.Node, path string, _ *ExtendedFileInfo) error 
 		return nil
 	}
 	defer func() { _ = f.Close() }()
-	view, err := io.ReadAll(f)
+	view, err := readSysattrs(f, path)
 	if err != nil {
-		return &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
+		return err
 	}
-	mask, err := sysattrMask(view)
-	if err != nil {
-		return &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
+	if crtime, ok := sysattrCrtime(view); ok {
+		node.SetBirthTime(crtime)
 	}
-	if mask&^illumosSysattrAutomatic == 0 {
-		return nil
+	if mask := sysattrMask(view); mask&^illumosSysattrAutomatic != 0 {
+		node.SetFileFlags(fileFlagsAttribute, mask)
 	}
-	node.SetFileFlags(fileFlagsAttribute, mask)
 	return nil
 }
 
+// readSysattrs reads the attributes in f, the SUNWattr_rw view of path.
+func readSysattrs(f *os.File, path string) (map[string]nvValue, error) {
+	buf, err := io.ReadAll(f)
+	if err != nil {
+		return nil, &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
+	}
+	view, err := nvlistValues(buf)
+	if err != nil {
+		return nil, &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
+	}
+	return view, nil
+}
+
+// restoreFileFlags sets the system attributes the view has to those in
+// flags, writing their booleans alone (illumos_sysattr.go).
 func restoreFileFlags(path string, typ data.NodeType, flags uint32, _ []byte) error {
 	f, err := sysattrView(path, typ, true)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	view, err := io.ReadAll(f)
+	view, err := readSysattrs(f, path)
 	if err != nil {
-		return &os.PathError{Op: "read SUNWattr_rw", Path: path, Err: err}
+		return err
 	}
 	return setFlagsBestEffort(flags, func(mask uint32) error {
-		if err := setSysattrMask(view, mask); err != nil {
-			return err
-		}
-		if _, err := f.WriteAt(view, 0); err != nil {
+		if _, err := f.WriteAt(sysattrMaskNvlist(view, mask), 0); err != nil {
 			return &os.PathError{Op: "write SUNWattr_rw", Path: path, Err: err}
 		}
 		return nil

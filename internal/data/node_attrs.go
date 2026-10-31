@@ -1,8 +1,10 @@
 package data
 
+import "time"
+
 // MalformedAttributeError is a BackOtter attribute (file flags,
-// linux.project_id, linux.zfs_dos_flags, unix.sparse) whose value can't be
-// decoded.  The restorer warns about it once per attribute and skips it: a
+// linux.project_id, linux.zfs_dos_flags, unix.sparse, unix.birthtime) whose
+// value can't be decoded.  The restorer warns about it once per attribute and skips it: a
 // snapshot that another build wrote oddly still restores, with everything
 // else in it.
 type MalformedAttributeError struct {
@@ -78,4 +80,27 @@ func (node *Node) SetZFSDosFlags(flags uint64) {
 	if err := node.SetGenericAttribute(TypeLinuxZFSDosFlags, flags); err != nil {
 		panic(err) // a uint64 always marshals
 	}
+}
+
+// BirthTime returns node's birth (creation) time (TypeUnixBirthTime), and
+// whether it has one.  Any RFC 3339 time is read, whatever its offset and
+// number of fractional digits.
+func (node *Node) BirthTime() (time.Time, bool, error) {
+	var birth time.Time
+	ok, err := node.GenericAttribute(TypeUnixBirthTime, &birth)
+	if err != nil {
+		return time.Time{}, false, &MalformedAttributeError{Attr: TypeUnixBirthTime, Err: err}
+	}
+	return birth, ok && !birth.IsZero(), nil
+}
+
+// SetBirthTime stores a birth time, in UTC with its nanoseconds, the form a
+// node's mtime has.  The zero time gets no attribute, nor do Unix seconds 0
+// and -1, which file systems without birth times (UFS1, FFSv1) report.
+func (node *Node) SetBirthTime(birth time.Time) {
+	if birth.IsZero() || birth.Unix() == 0 || birth.Unix() == -1 {
+		return
+	}
+	// A year past 9999, which JSON can't hold, is no birth time to keep.
+	_ = node.SetGenericAttribute(TypeUnixBirthTime, birth.UTC())
 }

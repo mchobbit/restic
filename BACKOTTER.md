@@ -21,7 +21,9 @@ new restic release rather than merged.
   - `illumos.acl`: ZFS's ACLs on illumos (NFSv4-style ACEs).
   - `illumos.system_attributes`: illumos' system attributes (`chmod(1)`'s
     `S+v...`), as a mask, read and written through each file's
-    `SUNWattr_rw` view.
+    `SUNWattr_rw` view.  A restore writes a packed nvlist of the
+    attributes' booleans alone, never the view it read: that would set the
+    creation time too, which an immutable file refuses.
   - `openbsd.file_flags`: OpenBSD's `chflags(1)` flags.
   - `netbsd.file_flags`: NetBSD's `chflags(1)` flags, but those the kernel
     manages (`SF_SNAPSHOT`, `SF_SNAPINVAL`, and `SF_LOG`, which marks the
@@ -47,10 +49,19 @@ new restic release rather than merged.
     to; archive cleared is kept, as 0.  FreeBSD (`freebsd.file_flags`) and
     illumos (`illumos.system_attributes`) hold the same flags already.
   - `unix.sparse`: `true` on a regular file that had holes.
+  - `unix.birthtime`: a file's birth (creation) time, on FreeBSD and NetBSD
+    (`st_birthtim`, every type of file) and illumos (ZFS's `crtime`,
+    regular files and directories), as a string in the form of the node's
+    mtime: RFC 3339 in UTC with every nanosecond, such as
+    `"2001-09-09T01:46:40.123456789Z"` or `"2001-09-09T01:46:40Z"`; any
+    offset is read.  Not when the file system reports second 0 or -1 (UFS1,
+    FFSv1).  Not on Linux, which can't set one, nor OpenBSD or DragonFly,
+    which keep none.
   A file only gets an attribute when it has something the mode doesn't say
   (flags, a non-trivial ACL, a project ID, holes), so trees of ordinary
   files are what stock restic writes, except that atimes are real (see
-  below) and files with holes carry `unix.sparse`; with
+  below), files with holes carry `unix.sparse`, and on FreeBSD, NetBSD and
+  illumos every file its birth time; on other systems, with
   `--with-atime=false` and no holes, they are byte-for-byte.
 - On restore, ACLs are set after the mode, which rewrites NFSv4 ACLs, and
   flags after everything else (contents, hard links, ownership, xattrs,
@@ -67,6 +78,17 @@ new restic release rather than merged.
   others are still set and restic warns about that one (S10 below).  Where it doesn't
   support a POSIX.1e ACL, restic reports that and narrows the group bits to
   the owning group's own access, so a file never comes back more open.
+- Birth times are restored just before the atime and mtime.  illumos sets
+  any `crtime` through the file's `SUNWattr_rw` view, with a packed nvlist
+  of `crtime` alone, before the system attributes (an immutable file
+  refuses it).  FreeBSD and NetBSD have no call that sets one, but their
+  kernels lower the birth time to any mtime set earlier than it (UFS2,
+  FFSv2, ZFS; files, directories and symlinks; owners too).  So a birth
+  time earlier than the mtime is set as the mtime first, with
+  `utimensat(2)` and the atime omitted, then the real times, which leave
+  it; one that isn't earlier comes back as the mtime, the closest those
+  systems can get.  Elsewhere the attribute is skipped quietly.  Failures
+  are reported as the times' are.
 - A restored symlink keeps its own times on every Unix that can set them
   (`utimensat(2)` with `AT_SYMLINK_NOFOLLOW`, as on Linux), and on FreeBSD,
   OpenBSD, NetBSD and DragonFly its permissions (`fchmodat(2)` with
@@ -187,9 +209,10 @@ can.  S1 to S11 are their numbers in BackOtter's plan.
   can't be opened for `FS_IOC_FSGETXATTR` without following them or side
   effects (Linux 6.17's `file_getattr(2)` could, but is too new to rely on).
 - **S9 Malformed values.**  A value of `linux.inode_flags`,
-  `linux.project_id`, `linux.zfs_dos_flags`, `unix.sparse` or a
-  `*.file_flags` attribute that can't be decoded gets one warning per
-  attribute per restore, and is ignored.  It is not an error.
+  `linux.project_id`, `linux.zfs_dos_flags`, `unix.sparse`,
+  `unix.birthtime` or a `*.file_flags` attribute that can't be decoded gets
+  one warning per attribute per restore, and is ignored.  It is not an
+  error.
 - **S10 Unsupported versus failed.**  When the target file system refuses an
   inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
   `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS

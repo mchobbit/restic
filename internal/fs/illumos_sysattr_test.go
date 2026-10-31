@@ -2,7 +2,9 @@ package fs
 
 import (
 	"encoding/hex"
+	"strings"
 	"testing"
+	"time"
 
 	rtest "github.com/restic/restic/internal/test"
 )
@@ -24,22 +26,149 @@ const sunwattrRW = "010100000000000000000001000000200000002800000008726561646f6e
 	"0000000000000000"
 
 func TestSysattrMask(t *testing.T) {
-	view, err := hex.DecodeString(sunwattrRW)
-	rtest.OK(t, err)
-
-	mask, err := sysattrMask(view)
+	view, err := nvlistValues(unhex(t, sunwattrRW))
 	rtest.OK(t, err)
 	want := illumosSysattrBits["nodump"] | illumosSysattrBits["immutable"] |
 		illumosSysattrBits["archive"] | illumosSysattrBits["av_modified"]
-	rtest.Equals(t, want, mask)
+	rtest.Equals(t, want, sysattrMask(view))
 
-	// Clear immutable, set hidden, and read it back.
+	// Clear immutable and set hidden: the nvlist written has every boolean
+	// the view has, and nothing else, and reads back as the mask.
 	want = want&^illumosSysattrBits["immutable"] | illumosSysattrBits["hidden"]
-	rtest.OK(t, setSysattrMask(view, want))
-	mask, err = sysattrMask(view)
+	written, err := nvlistValues(sysattrMaskNvlist(view, want))
 	rtest.OK(t, err)
-	rtest.Equals(t, want, mask)
+	rtest.Equals(t, want, sysattrMask(written))
+	rtest.Equals(t, len(view), len(written))
+	_, ok := sysattrCrtime(written)
+	rtest.Assert(t, !ok, "the system attributes' nvlist has a crtime")
 
-	_, err = sysattrMask([]byte{0, 1, 0, 0})
+	_, err = nvlistValues([]byte{0, 1, 0, 0})
 	rtest.Assert(t, err != nil, "a native-encoded nvlist was accepted")
+}
+
+// Packed by OmniOS r151058's nvlist_pack(NV_ENCODE_XDR), and read with
+// fgetattr(3C)'s view, SUNWattr_rw.
+// {crtime=[1000000000,123456789]}
+const nvlistCrtime = "" +
+	"01010000 00000000 00000001 00000030 00000028 00000006 63727469 6d650000" +
+	"00000010 00000002 00000002 00000000 3b9aca00 00000000 075bcd15 00000000" +
+	"00000000"
+
+// {hidden=true, immutable=false}
+const nvlistHidden = "" +
+	"01010000 00000000 00000001 00000020 00000020 00000006 68696464 656e0000" +
+	"00000015 00000001 00000001 00000024 00000028 00000009 696d6d75 7461626c" +
+	"65000000 00000015 00000001 00000000 00000000 00000000"
+
+// {ownersid={domain="S-1-5-21-1111-2222-3333", rid=1001}}
+const nvlistOwnerSID = "" +
+	"01010000 00000000 00000001 00000080 00000038 00000008 6f776e65 72736964" +
+	"00000013 00000001 00000000 00000001 00000038 00000030 00000006 646f6d61" +
+	"696e0000 00000009 00000001 00000017 532d312d 352d3231 2d313131 312d3232" +
+	"32322d33 33333300 0000001c 00000020 00000003 72696400 00000006 00000001" +
+	"000003e9 00000000 00000000 00000000 00000000"
+
+// a new file's whole view (archive, av_modified and its crtime)
+const sunwattrPlain = "" +
+	"01010000 00000000 00000001 00000020 00000028 00000008 72656164 6f6e6c79" +
+	"00000015 00000001 00000000 00000020 00000020 00000006 68696464 656e0000" +
+	"00000015 00000001 00000000 00000020 00000020 00000006 73797374 656d0000" +
+	"00000015 00000001 00000000 00000020 00000020 00000007 61726368 69766500" +
+	"00000015 00000001 00000001 00000024 00000028 00000009 696d6d75 7461626c" +
+	"65000000 00000015 00000001 00000000 00000020 00000028 00000008 6e6f756e" +
+	"6c696e6b 00000015 00000001 00000000 00000024 00000028 0000000a 61707065" +
+	"6e646f6e 6c790000 00000015 00000001 00000000 00000020 00000020 00000006" +
+	"6e6f6475 6d700000 00000015 00000001 00000000 00000028 00000028 0000000e" +
+	"61765f71 75617261 6e74696e 65640000 00000015 00000001 00000000 00000024" +
+	"00000028 0000000b 61765f6d 6f646966 69656400 00000015 00000001 00000001" +
+	"00000030 00000028 00000006 63727469 6d650000 00000010 00000002 00000002" +
+	"00000000 6ae503f8 00000000 007db3d8 00000020 00000020 00000007 6f66666c" +
+	"696e6500 00000015 00000001 00000000 00000020 00000020 00000006 73706172" +
+	"73650000 00000015 00000001 00000000 00000000 00000000"
+
+// the whole view of a file owned by a SID, with ownersid and groupsid, nested nvlists
+const sunwattrSID = "" +
+	"01010000 00000000 00000001 00000020 00000028 00000008 72656164 6f6e6c79" +
+	"00000015 00000001 00000000 00000020 00000020 00000006 68696464 656e0000" +
+	"00000015 00000001 00000000 00000020 00000020 00000006 73797374 656d0000" +
+	"00000015 00000001 00000000 00000020 00000020 00000007 61726368 69766500" +
+	"00000015 00000001 00000001 00000024 00000028 00000009 696d6d75 7461626c" +
+	"65000000 00000015 00000001 00000000 00000020 00000028 00000008 6e6f756e" +
+	"6c696e6b 00000015 00000001 00000000 00000024 00000028 0000000a 61707065" +
+	"6e646f6e 6c790000 00000015 00000001 00000000 00000020 00000020 00000006" +
+	"6e6f6475 6d700000 00000015 00000001 00000000 00000028 00000028 0000000e" +
+	"61765f71 75617261 6e74696e 65640000 00000015 00000001 00000000 00000024" +
+	"00000028 0000000b 61765f6d 6f646966 69656400 00000015 00000001 00000001" +
+	"00000030 00000028 00000006 63727469 6d650000 00000010 00000002 00000002" +
+	"00000000 6ae503f8 00000000 2759d7f4 00000020 00000020 00000007 6f66666c" +
+	"696e6500 00000015 00000001 00000000 00000020 00000020 00000006 73706172" +
+	"73650000 00000015 00000001 00000000 00000080 00000038 00000008 6f776e65" +
+	"72736964 00000013 00000001 00000000 00000001 00000038 00000030 00000006" +
+	"646f6d61 696e0000 00000009 00000001 00000017 532d312d 352d3231 2d313131" +
+	"312d3232 32322d33 33333300 0000001c 00000020 00000003 72696400 00000006" +
+	"00000001 000003e9 00000000 00000000 00000080 00000038 00000008 67726f75" +
+	"70736964 00000013 00000001 00000000 00000001 00000038 00000030 00000006" +
+	"646f6d61 696e0000 00000009 00000001 00000017 532d312d 352d3231 2d313131" +
+	"312d3232 32322d33 33333300 0000001c 00000020 00000003 72696400 00000006" +
+	"00000001 00000201 00000000 00000000 00000000 00000000"
+
+func unhex(t *testing.T, s string) []byte {
+	t.Helper()
+	buf, err := hex.DecodeString(strings.ReplaceAll(s, " ", ""))
+	rtest.OK(t, err)
+	return buf
+}
+
+func TestEncodeNvlist(t *testing.T) {
+	for _, test := range []struct {
+		pairs []nvPair
+		want  string
+	}{
+		{[]nvPair{{"crtime", []uint64{1000000000, 123456789}}}, nvlistCrtime},
+		{[]nvPair{{"hidden", true}, {"immutable", false}}, nvlistHidden},
+		{[]nvPair{{"ownersid", []nvPair{{"domain", "S-1-5-21-1111-2222-3333"}, {"rid", uint32(1001)}}}}, nvlistOwnerSID},
+	} {
+		rtest.Equals(t, hex.EncodeToString(unhex(t, test.want)), hex.EncodeToString(encodeNvlist(test.pairs)))
+	}
+	rtest.Equals(t, unhex(t, nvlistCrtime), crtimeNvlist(time.Unix(1000000000, 123456789)))
+
+	// The system attributes' nvlist for a view with these two booleans.
+	view, err := nvlistValues(unhex(t, nvlistHidden))
+	rtest.OK(t, err)
+	rtest.Equals(t, unhex(t, nvlistHidden), sysattrMaskNvlist(view, illumosSysattrBits["hidden"]))
+}
+
+func TestSysattrCrtime(t *testing.T) {
+	automatic := uint32(illumosSysattrAutomatic)
+	for _, test := range []struct {
+		name   string
+		view   string
+		crtime time.Time
+		mask   uint32
+	}{
+		{"crtime alone", nvlistCrtime, time.Unix(1000000000, 123456789), 0},
+		{"plain view", sunwattrPlain, time.Unix(1793393656, 8238040), automatic},
+		{"view with SIDs", sunwattrSID, time.Unix(1793393656, 660199412), automatic},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			view, err := nvlistValues(unhex(t, test.view))
+			rtest.OK(t, err)
+			crtime, ok := sysattrCrtime(view)
+			rtest.Assert(t, ok && crtime.Equal(test.crtime), "crtime %v, want %v", crtime, test.crtime)
+			rtest.Equals(t, test.mask, sysattrMask(view))
+		})
+	}
+
+	// The nested nvlists are skipped whole: nothing in them is at the top.
+	view, err := nvlistValues(unhex(t, sunwattrSID))
+	rtest.OK(t, err)
+	rtest.Equals(t, uint32(dataTypeNvlist), view["groupsid"].typ)
+	_, ok := view["domain"]
+	rtest.Assert(t, !ok, "a nested pair was read at the top")
+	rtest.Equals(t, 15, len(view))
+
+	view, err = nvlistValues(unhex(t, nvlistHidden))
+	rtest.OK(t, err)
+	_, ok = sysattrCrtime(view)
+	rtest.Assert(t, !ok, "crtime found in a view without one")
 }

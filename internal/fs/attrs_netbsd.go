@@ -8,3 +8,7 @@ package fs
 // a default install's root, the system calls fail with EOPNOTSUPP, and a
 // file simply has none.
 var osACLs = &netbsdACLs
+
+// utimeOmit is UTIME_OMIT (birthtime_bsd.go), from <sys/stat.h>: x/sys/unix
+// lacks it for NetBSD.
+const utimeOmit = 1<<30 - 2

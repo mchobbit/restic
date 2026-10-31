@@ -24,6 +24,7 @@ type ExtendedFileInfo struct {
 	AccessTime time.Time // last access time stamp
 	ModTime    time.Time // last (content) modification time stamp
 	ChangeTime time.Time // last status change time stamp
+	BirthTime  time.Time // birth (creation) time stamp, where it is kept (FreeBSD, NetBSD); zero otherwise
 
 	//nolint:unused // only used on Windows/Darwin
 	sys any // Value returned by os.FileInfo.Sys()

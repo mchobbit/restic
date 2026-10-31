@@ -87,6 +87,8 @@ const (
 	TypeDragonFlyFileFlags GenericAttributeType = "dragonfly.file_flags"
 	// TypeLinuxZFSDosFlags is the GenericAttributeType used for storing a Linux file's ZFS DOS flags (ZFS_IOC_GETDOSFLAGS: readonly, hidden, system, archive, nounlink, offline, sparse), when they aren't archive alone; 0 is a value.
 	TypeLinuxZFSDosFlags GenericAttributeType = "linux.zfs_dos_flags"
+	// TypeUnixBirthTime is the GenericAttributeType used for storing a file's birth (creation) time on FreeBSD, NetBSD and illumos, as a time in UTC, in the form of the node's mtime.
+	TypeUnixBirthTime GenericAttributeType = "unix.birthtime"
 )
 
 // init is called when the package is initialized. Any new GenericAttributeTypes being created must be added here as well.
@@ -101,6 +103,7 @@ func init() {
 	storeGenericAttributeType(TypeNetBSDFileFlags, TypeNetBSDSystemExtattrs, TypeNetBSDACLAccess, TypeNetBSDACLDefault, TypeNetBSDACLNFS4)
 	storeGenericAttributeType(TypeDragonFlyFileFlags)
 	storeGenericAttributeType(TypeLinuxZFSDosFlags)
+	storeGenericAttributeType(TypeUnixBirthTime)
 }
 
 // genericAttributesForOS maintains a map of known genericAttributesForOS to the OSType

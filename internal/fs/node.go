@@ -353,7 +353,9 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 
 	if err := nodeRestoreTimestamps(node, path); err != nil {
 		debug.Log("error restoring timestamps for %v: %v", path, err)
-		if firsterr == nil {
+		err, w := SplitWarnings(err)
+		warnings = append(warnings, w...)
+		if err != nil && firsterr == nil {
 			firsterr = err
 		}
 	}
@@ -393,8 +395,13 @@ func nodeRestoreTimestamps(node *data.Node, path string) error {
 	atime := node.AccessTime.UnixNano()
 	mtime := node.ModTime.UnixNano()
 
+	// BackOtter: the birth time goes just before the atime and mtime: on
+	// FreeBSD and NetBSD it is set as an earlier mtime, which they replace
+	// (birthtime.go).  Its errors are reported with theirs, and don't keep
+	// them from being set.
+	birthErr := nodeRestoreBirthTime(node, fixpath(path))
 	if err := utimesNano(fixpath(path), atime, mtime, node.Type); err != nil {
-		return fmt.Errorf("failed to restore timestamp of %q: %w", path, err)
+		return errors.Join(birthErr, fmt.Errorf("failed to restore timestamp of %q: %w", path, err))
 	}
-	return nil
+	return birthErr
 }

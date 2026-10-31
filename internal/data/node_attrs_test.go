@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	rtest "github.com/restic/restic/internal/test"
 )
@@ -125,4 +126,60 @@ func TestNodeZFSDosFlags(t *testing.T) {
 		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxZFSDosFlags,
 			"ZFS DOS flags %s: want a MalformedAttributeError, got %v", raw, err)
 	}
+}
+
+func TestNodeBirthTime(t *testing.T) {
+	var node Node
+	_, ok, err := node.BirthTime()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "birth time without the attribute")
+
+	// Written in UTC with every nanosecond and no trailing zeros, as Go
+	// writes a node's mtime and rustic-bko a jiff::Timestamp.
+	for _, test := range []struct {
+		birth time.Time
+		json  string
+	}{
+		{time.Unix(1000000000, 123456789), `"2001-09-09T01:46:40.123456789Z"`},
+		{time.Unix(1000000000, 0), `"2001-09-09T01:46:40Z"`},
+		{time.Unix(1000000000, 5), `"2001-09-09T01:46:40.000000005Z"`},
+		{time.Unix(1000000000, 5).In(time.FixedZone("CEST", 2*3600)), `"2001-09-09T01:46:40.000000005Z"`},
+	} {
+		var node Node
+		node.SetBirthTime(test.birth)
+		rtest.Equals(t, test.json, string(node.GenericAttributes[TypeUnixBirthTime]))
+
+		birth, ok, err := node.BirthTime()
+		rtest.OK(t, err)
+		rtest.Assert(t, ok && birth.Equal(test.birth), "birth time %v came back as %v", test.birth, birth)
+	}
+
+	// Any offset and any number of fractional digits are read.
+	node.GenericAttributes = map[GenericAttributeType]json.RawMessage{
+		TypeUnixBirthTime: json.RawMessage(`"2001-09-09T03:46:40.5+02:00"`),
+	}
+	birth, ok, err := node.BirthTime()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok && birth.Equal(time.Unix(1000000000, 500000000)), "birth time with an offset read as %v", birth)
+
+	// What file systems without birth times report isn't kept.
+	for _, sec := range []int64{0, -1} {
+		var node Node
+		node.SetBirthTime(time.Unix(sec, 0))
+		node.SetBirthTime(time.Time{})
+		rtest.Assert(t, node.GenericAttributes == nil, "birth time %d stored", sec)
+	}
+
+	for _, raw := range []string{`1000000000`, `"2001-09-09"`, `"x"`} {
+		node.GenericAttributes[TypeUnixBirthTime] = json.RawMessage(raw)
+		_, ok, err = node.BirthTime()
+		rtest.Assert(t, !ok, "malformed birth time %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeUnixBirthTime,
+			"birth time %s: want a MalformedAttributeError, got %v", raw, err)
+	}
+	node.GenericAttributes[TypeUnixBirthTime] = json.RawMessage(`null`)
+	_, ok, err = node.BirthTime()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "birth time null taken")
 }
