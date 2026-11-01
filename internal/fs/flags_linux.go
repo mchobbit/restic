@@ -61,6 +61,11 @@ func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error
 	nodeFillZFSDosFlags(node, path, fd, fi.DeviceID)
 	if node.Type == data.NodeTypeFile {
 		hole := func() (int64, error) {
+			if genericSeekHole(fd, fi.DeviceID) {
+				// SEEK_HOLE would answer the size: the file system
+				// can't answer, and the blocks decide (S3).
+				return 0, unix.EOPNOTSUPP
+			}
 			hole, err := unix.Seek(fd, 0, seekHole)
 			if err != nil {
 				debug.Log("no SEEK_HOLE for %v: %v", path, err)

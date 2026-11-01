@@ -295,7 +295,12 @@ own addition, made after that plan with the sparse-file work (batch 3).
   3. otherwise is sparse if `lseek(fd, 0, SEEK_HOLE)` finds a hole before
      `size`.  If the probe fails with `EINVAL`, `ENOTSUP`/`EOPNOTSUPP` or
      `ENOTTY` (the file system can't answer), the blocks decide: sparse.  Any
-     other error (a failed open, `ENXIO`, `EACCES`, ...) means not sparse;
+     other error (a failed open, `ENXIO`, `EACCES`, ...) means not sparse.
+     On Linux's JFS and nilfs2 (`statfs` `f_type` `0x3153464a` and
+     `0x3434`), whose SEEK_HOLE is the kernel's generic one and always
+     answers the size, the probe isn't made and the blocks decide too:
+     neither compresses nor keeps data in the inode, so fewer blocks than the
+     size mean holes;
   4. on Linux the probe uses the descriptor opened for the inode flags and
      project ID, so each file is opened once; if that open fails, the file
      is not sparse.  Elsewhere the probe opens the file with
@@ -421,6 +426,8 @@ own addition, made after that plan with the sparse-file work (batch 3).
   the end, or the rest is read plainly.  Any other `lseek` error,
   `SEEK_HOLE` at or before where the reader is, and every file elsewhere,
   is read plainly from there on, up to whatever end of file a read finds.
+  On JFS and nilfs2 (S3), SEEK_HOLE gives the size, so a file there is
+  read whole, holes and all.
   The bytes the chunker gets are exactly those plain reading gives, so
   chunks, blob IDs, trees and snapshots are bit-for-bit what they were
   before this rule.  A file that grows or shrinks while it is read gives
