@@ -12,6 +12,9 @@ import (
 
 const fileFlagsAttribute = data.TypeOpenBSDFileFlags
 
+// restrictingFlags are the flags ClearRestrictingFlags clears here (bsd_flags.go).
+const restrictingFlags = openbsdRestrictingFlags
+
 // From OpenBSD's <sys/stat.h>: the flags an owner may set (nodump,
 // immutable, append, opaque) and those only root may (archived, immutable,
 // append; the last two can't be cleared again above securelevel 0).

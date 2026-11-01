@@ -314,3 +314,65 @@ func TestRestorerExt4CasefoldProject(t *testing.T) {
 	rtest.OK(t, err)
 	rtest.Equals(t, "7", strings.Fields(string(out))[0])
 }
+
+// A restore over files that are immutable or append-only (chattr +i, +a)
+// clears those flags first, so that their contents and metadata come back,
+// and then sets each node's flags (BackOtter; rustic-bko does the same).
+func TestRestorerOverRestrictingFlags(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root (CAP_LINUX_IMMUTABLE)")
+	}
+	dst := rtest.TempDir(t)
+	for name, flag := range map[string]string{"imm": "+i", "app": "+a", "plain": "+i"} {
+		path := filepath.Join(dst, name)
+		rtest.OK(t, os.WriteFile(path, []byte("changed contents"), 0o644))
+		if out, err := exec.Command("chattr", flag, path).CombinedOutput(); err != nil {
+			t.Skipf("chattr %v: %v: %s", flag, err, out)
+		}
+	}
+	defer func() {
+		for _, name := range []string{"imm", "app", "plain"} {
+			_ = exec.Command("chattr", "-i", "-a", filepath.Join(dst, name)).Run()
+		}
+	}()
+
+	imm, app := &FileAttributes{}, &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"imm":   File{Data: "immutable", attributes: imm},
+			"app":   File{Data: "append-only", attributes: app},
+			"plain": File{Data: "no flags"},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		imm: {data.TypeLinuxInodeFlags: json.RawMessage(`16`)}, // FS_IMMUTABLE_FL
+		app: {data.TypeLinuxInodeFlags: json.RawMessage(`32`)}, // FS_APPEND_FL
+	}))
+
+	res := NewRestorer(repo, sn, Options{})
+	res.Error = func(location string, err error) error {
+		t.Errorf("restore %v: %v", location, err)
+		return nil
+	}
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+
+	flagsOf := func(path string) uint32 {
+		f, err := os.Open(path)
+		rtest.OK(t, err)
+		defer func() { _ = f.Close() }()
+		flags, err := unix.IoctlGetUint32(int(f.Fd()), unix.FS_IOC_GETFLAGS)
+		rtest.OK(t, err)
+		return flags
+	}
+	for name, want := range map[string]struct {
+		data  string
+		flags uint32
+	}{"imm": {"immutable", 0x10}, "app": {"append-only", 0x20}, "plain": {"no flags", 0}} {
+		path := filepath.Join(dst, name)
+		got, err := os.ReadFile(path)
+		rtest.OK(t, err)
+		rtest.Equals(t, want.data, string(got))
+		rtest.Equals(t, want.flags, flagsOf(path)&0x30)
+	}
+}

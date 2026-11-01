@@ -20,6 +20,19 @@ func TestBSDFileFlagMasks(t *testing.T) {
 	rtest.Equals(t, uint32(0xffffffff), uint32(dragonflyFileFlags))
 }
 
+func TestRestrictingFlags(t *testing.T) {
+	// chflags(1): uchg uappnd uunlnk urdonly schg sappnd sunlnk, as
+	// rustic-bko's bsd_flags.rs has them.
+	rtest.Equals(t, uint32(0x00161016), uint32(freebsdRestrictingFlags))
+	rtest.Equals(t, uint32(0x00060006), uint32(netbsdRestrictingFlags))
+	rtest.Equals(t, uint32(0x00060006), uint32(openbsdRestrictingFlags))
+	rtest.Equals(t, uint32(0x00160016), uint32(dragonflyRestrictingFlags))
+	// nodump, uarch, hidden and the snapshot bit stay.
+	for _, keep := range []uint32{0x1, 0x800, 0x8000, 0x200000} {
+		rtest.Equals(t, uint32(0), keep&freebsdRestrictingFlags)
+	}
+}
+
 func TestKeptFreeBSDFileFlags(t *testing.T) {
 	const (
 		ufHidden   = 0x8000

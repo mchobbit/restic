@@ -632,7 +632,12 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts global.Options, te
 	cancelCtx, cancel := context.WithCancel(wgCtx)
 	defer cancel()
 
-	if !opts.NoScan {
+	// BackOtter: no scan where listing a directory moves its access time
+	// (fs.ListingKeepsAtimes), which the snapshot keeps.
+	if !opts.NoScan && !fs.ListingKeepsAtimes {
+		debug.Log("no scan: listing directories here moves their access times")
+	}
+	if !opts.NoScan && fs.ListingKeepsAtimes {
 		sc := archiver.NewScanner(targetFS)
 		sc.SelectByName = selectByNameFilter
 		sc.Select = selectFilter

@@ -6,6 +6,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// ListingKeepsAtimes tells whether listing a directory can leave its access
+// time as it was: here, with O_NOATIME (where the user may ask for it).
+const ListingKeepsAtimes = true
+
 // SetFlags tries to set the O_NOATIME flag on f, which prevents the kernel
 // from updating the atime on a read call.
 //

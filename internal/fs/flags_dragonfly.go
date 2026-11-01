@@ -10,6 +10,9 @@ import (
 
 const fileFlagsAttribute = data.TypeDragonFlyFileFlags
 
+// restrictingFlags are the flags ClearRestrictingFlags clears here (bsd_flags.go).
+const restrictingFlags = dragonflyRestrictingFlags
+
 func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
 	if s, ok := fi.sys.(*syscall.Stat_t); ok {
 		node.SetFileFlags(fileFlagsAttribute, s.Flags&dragonflyFileFlags)

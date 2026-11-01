@@ -309,6 +309,8 @@ func (res *Restorer) traverseTreeInner(ctx context.Context, target, location str
 func (res *Restorer) restoreNodeTo(node *data.Node, target, location string) error {
 	if !res.opts.DryRun {
 		debug.Log("restoreNode %v %v %v", node.Name, target, location)
+		// BackOtter: flags that refuse removal come off first.
+		fs.ClearRestrictingFlags(target)
 		if err := fs.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.Wrap(err, "RemoveNode")
 		}
@@ -563,6 +565,7 @@ func (res *Restorer) restoreFileFlags() error {
 
 func (res *Restorer) restoreHardlinkAt(node *data.Node, target, path, location string) error {
 	if !res.opts.DryRun {
+		fs.ClearRestrictingFlags(path)
 		if err := fs.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.Wrap(err, "RemoveCreateHardlink")
 		}
@@ -588,6 +591,7 @@ func (res *Restorer) ensureDir(target string) error {
 	}
 	if err == nil && !fi.IsDir() {
 		// try to cleanup unexpected file
+		fs.ClearRestrictingFlags(target)
 		if err := fs.Remove(target); err != nil {
 			return fmt.Errorf("failed to remove stale item: %w", err)
 		}
@@ -611,6 +615,10 @@ func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
 	if res.opts.DryRun {
 		return nil
 	}
+	// BackOtter: what the restore finds in its way loses the flags that
+	// would refuse its getting entries, metadata or being replaced
+	// (fs.ClearRestrictingFlags); the late flags pass sets the node's.
+	fs.ClearRestrictingFlags(target)
 	if !fs.HasDirFlagsBeforeEntries() {
 		return res.ensureDir(target)
 	}
@@ -736,6 +744,14 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 
 			sparse := res.nodeSparse(node, location)
 			buf, err = res.withOverwriteCheck(ctx, node, target, location, false, buf, func(updateMetadataOnly bool, matches *fileState) error {
+				// BackOtter: a file in the way loses the flags that
+				// would refuse its being rewritten, replaced or given
+				// its metadata (immutable, append-only, undeletable),
+				// as in rustic-bko; the late flags pass sets the
+				// node's.
+				if !res.opts.DryRun {
+					fs.ClearRestrictingFlags(target)
+				}
 				unread := res.warnUnread(node, location)
 				if updateMetadataOnly {
 					res.opts.Progress.AddSkippedFile(location, node.Size)
@@ -914,6 +930,11 @@ func (res *Restorer) removeUnexpectedFiles(ctx context.Context, target, location
 			}
 
 			if !res.opts.DryRun {
+				// BackOtter: flags that refuse removal come off
+				// first, outermost first.
+				for _, path := range filesToDelete {
+					fs.ClearRestrictingFlags(path)
+				}
 				// Perform the deletion
 				if err := fs.RemoveAll(nodeTarget); err != nil {
 					return err

@@ -65,6 +65,13 @@ new restic release rather than merged.
     down (`zfs project -p 77 -s`), as `{"id":77,"inherit":true}`
     (`"inherit"` left out when false), when it has either; regular files
     and directories.
+  - `freebsd.zfs_project`: the same on FreeBSD's ZFS (`zfs project`;
+    regular files and directories on ZFS, by statfs's `f_fstypename`), in
+    the same form.  OpenZFS takes Linux's `struct fsxattr` (28 bytes) there,
+    with ioctls `'X'` 31 and 32 (`0x401c581f`, `0x801c5820`, as `truss(1)`
+    shows `zfs project` calling them on FreeBSD 15.1); only inheritance
+    (`0x20000000`) of its flags is used.  Project quotas
+    (`projectquota@N`) count by it.
   - `illumos.unread_size`: on a regular file whose contents weren't backed
     up, because av_quarantined kept it closed (below), the size it had
     then, in bytes, as a number (`1234`); the node itself has size 0 and no
@@ -197,6 +204,31 @@ new restic release rather than merged.
   `FS_IOC_FSGETXATTR`, but ioctls `'X'` 31 and 32 with an 8-byte struct of
   the flags, of which only inheritance (`0x20000000`) is used, and the
   project ID (checked on OmniOS r151058, with `truss` and `zfs project`).
+- FreeBSD ZFS project IDs (`freebsd.zfs_project`) are restored with the
+  system extended attributes, before the flags, as each node's own ID and
+  inheritance, as on illumos; on UFS (`ENOTTY`) they are a warning (S10).
+- **Restoring over flags that refuse it.**  Before the restore touches a
+  file or directory it finds at a node's path (to rewrite it, give it its
+  metadata, replace it, link over it, put entries in it, or remove it with
+  `--delete`), it clears the flags that would refuse that, keeping the
+  others: on FreeBSD immutable, append-only and undeletable, the owner's and
+  the system's (`uchg`, `uappnd`, `uunlnk`, `schg`, `sappnd`, `sunlnk`), and
+  ZFS's DOS read-only (`urdonly`), which refuses writes too; on NetBSD and
+  OpenBSD `uchg`, `uappnd`, `schg`, `sappnd`; on DragonFly those and
+  `uunlnk`, `sunlnk`; on Linux immutable and append-only (`i`, `a`), through
+  `FS_IOC_FSSETXATTR` where the file system has it (it leaves btrfs's
+  `btrfs.compression` alone), else `FS_IOC_SETFLAGS`.  The late flag pass
+  then gives every file its node's flags, so a restore over an installed
+  FreeBSD (whose `libc.so.7`, `ld-elf.so.1`, `init` and `su` are `schg`)
+  puts back the snapshot's contents and metadata.  Files the restore leaves
+  alone (`--overwrite never`, or `if-newer` with a newer file) keep their
+  flags.  Clearing a system flag takes root at securelevel 0 or below (a
+  rescue system's is -1); where it is refused, what the restore does next
+  fails as before, with the error.  Before this, such a file kept its
+  changed contents and the restore exited 1 ("operation not permitted").
+  illumos' immutable, appendonly and nounlink system attributes are not
+  cleared yet: a restore over such a file there still fails for it, in both
+  tools.  rustic-bko does the same.
 - **SIDs on illumos.**  A file owned by a SID (a Windows user or group, as
   the SMB server and ZFS keep them) has an ephemeral uid or gid, which
   idmapd hands out when asked and forgets at a reboot: restored as a number
@@ -270,8 +302,18 @@ own addition, made after that plan with the sparse-file work (batch 3).
   backup with either tool moves the atimes of the source's symlinks.  The
   snapshot still has the old ones (the `lstat` comes before the
   `readlink`), and a restore gives them back.
-  Other systems have no `O_NOATIME`, and there both tools update atimes the
-  same way.  `rewrite` keeps the stored atimes.  `restore --verify` reads
+  Other systems have no `O_NOATIME`, and there listing a directory moves its
+  atime (where the file system keeps them: not read-only, `noatime` or
+  ZFS's `atime=off`; reading a file moves its own).  So both tools take a
+  directory's `lstat` before they list it, the backup's root included
+  (restic's archiver always did; rustic-bko's walker now keeps the metadata
+  it takes before it reads a directory), and neither runs its size scan
+  there (as with `--no-scan`; restic's scanner and rustic-bko's run beside
+  the backup, listing directories before the backup reaches them, which
+  gave the snapshot the scan's time as their atimes).  Progress then shows
+  no total or ETA.  Files' atimes are those before the backup read them.
+  Linux, with `O_NOATIME`, keeps its scan.  `rewrite` keeps the stored
+  atimes.  `restore --verify` reads
   the restored files with `O_NOATIME`, so it doesn't undo their atimes.
 - **S2 Ownership.**  Restore gives files their numeric uid and gid by
   default.  `--ownership-by-name` (rustic-bko: `--by-name`, or its alias
@@ -393,8 +435,8 @@ own addition, made after that plan with the sparse-file work (batch 3).
   `unix.birthtime` or a `*.file_flags` attribute that can't be decoded gets
   one warning per attribute per restore, and is ignored.  It is not an
   error.  (restic does the same for `illumos.owner_sid`,
-  `illumos.group_sid`, `illumos.xattr_meta`, `illumos.zfs_project` and
-  `illumos.unread_size`.)
+  `illumos.group_sid`, `illumos.xattr_meta`, `illumos.zfs_project`,
+  `freebsd.zfs_project` and `illumos.unread_size`.)
 - **S10 Unsupported versus failed.**  When the target file system refuses an
   inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
   `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS
@@ -406,7 +448,10 @@ own addition, made after that plan with the sparse-file work (batch 3).
   running as root) is an error, and restic
   exits 1, while rustic-bko only warns about it and exits 0 (upstream
   rustic's design).  That is the one exit-status difference left between
-  the tools.
+  the tools.  A file whose contents can't be written (one that can't be
+  opened for writing) is an error in both: restic exits 1, and rustic-bko,
+  which panicked there, reports each such file once, restores everything
+  else, and exits 1.
 - **S11 Opening files for metadata.**  Regular files and directories are
   opened with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC` (and
   `O_DIRECTORY` for directories) and checked with `fstat`: a file of another

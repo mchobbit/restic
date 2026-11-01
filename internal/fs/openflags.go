@@ -1,4 +1,4 @@
-//go:build linux || illumos
+//go:build linux || illumos || freebsd
 
 package fs
 
@@ -11,8 +11,9 @@ import (
 
 // openForFlags opens a regular file or directory for FS_IOC_GETFLAGS and
 // FS_IOC_SETFLAGS, as lsattr(1) and chattr(1) do (on illumos for ZFS's
-// project ioctls, as zfs project does).  Other types of file have no flags,
-// and opening a device or FIFO could have side effects.  The file opened
+// project ioctls, as zfs project does, and on FreeBSD for them too).
+// Other types of file have no flags, and opening a device or FIFO could
+// have side effects.  The file opened
 // must be of type typ, and, when fi is given (at backup), the inode fi
 // describes.
 func openForFlags(path string, typ data.NodeType, fi *ExtendedFileInfo) (int, error) {
@@ -36,7 +37,7 @@ func openForFlags(path string, typ data.NodeType, fi *ExtendedFileInfo) (int, er
 		_ = unix.Close(fd)
 		return -1, &os.PathError{Op: "fstat", Path: path, Err: err}
 	}
-	if st.Mode&unix.S_IFMT != mode || fi != nil && (uint64(st.Dev) != fi.DeviceID || st.Ino != fi.Inode) {
+	if uint32(st.Mode)&unix.S_IFMT != mode || fi != nil && (uint64(st.Dev) != fi.DeviceID || st.Ino != fi.Inode) {
 		_ = unix.Close(fd)
 		return -1, &os.PathError{Op: "open", Path: path, Err: errNotNodeType}
 	}

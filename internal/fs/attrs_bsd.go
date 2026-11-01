@@ -160,7 +160,8 @@ func setSystemExtattr(path, name string, value []byte) error {
 	return nil
 }
 
-func nodeFillOSAttributes(node *data.Node, path string, _ *ExtendedFileInfo) error {
+func nodeFillOSAttributes(node *data.Node, path string, fi *ExtendedFileInfo) error {
+	nodeFillZFSProject(node, path, fi)
 	return errors.Join(nodeFillSystemExtattrs(node, path), nodeFillACLs(node, path))
 }
 
@@ -218,11 +219,16 @@ func ignoreUnsupported(path string, err error) error {
 	return err
 }
 
-// nodeRestoreOSAttributes restores the system extended attributes.  Those a
-// file system without extended attributes refuses (FFSv1, plain FFSv2) are
-// one XattrsWarning naming them all, as the user namespace's are
-// (node_xattr.go): a warning of their own.
+// nodeRestoreOSAttributes restores the system extended attributes, and on
+// FreeBSD the ZFS project (project_freebsd.go).  Extended attributes a file
+// system without them refuses (FFSv1, plain FFSv2) are one XattrsWarning
+// naming them all, as the user namespace's are (node_xattr.go): a warning
+// of their own.
 func nodeRestoreOSAttributes(node *data.Node, path string) error {
+	return errors.Join(nodeRestoreSystemExtattrs(node, path), nodeRestoreZFSProject(node, path))
+}
+
+func nodeRestoreSystemExtattrs(node *data.Node, path string) error {
 	var attrs map[string][]byte
 	ok, err := node.GenericAttribute(osACLs.systemExtattrs, &attrs)
 	if !ok || err != nil {

@@ -12,6 +12,9 @@ import (
 
 const fileFlagsAttribute = data.TypeNetBSDFileFlags
 
+// restrictingFlags are the flags ClearRestrictingFlags clears here (bsd_flags.go).
+const restrictingFlags = netbsdRestrictingFlags
+
 func nodeFillFileFlags(node *data.Node, _ string, fi *ExtendedFileInfo) error {
 	if s, ok := fi.sys.(*syscall.Stat_t); ok {
 		node.SetFileFlags(fileFlagsAttribute, s.Flags&netbsdFileFlags)

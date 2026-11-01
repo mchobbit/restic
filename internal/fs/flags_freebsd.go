@@ -15,6 +15,9 @@ import (
 
 const fileFlagsAttribute = data.TypeFreeBSDFileFlags
 
+// restrictingFlags are the flags ClearRestrictingFlags clears here (bsd_flags.go).
+const restrictingFlags = freebsdRestrictingFlags
+
 // From FreeBSD's <sys/stat.h>.
 const (
 	ufSettable = 0x0000ffff // the flags an owner may set

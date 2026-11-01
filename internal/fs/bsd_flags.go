@@ -21,6 +21,32 @@ const netbsdFileFlags = 0xffffffff &^ (netbsdSFSnapshot | netbsdSFLog | netbsdSF
 // kernel's own (SF_UNUSED17 is FreeBSD's SF_SNAPSHOT).
 const dragonflyFileFlags = 0xffffffff
 
+// The flags that keep a file from being written, appended to only, or
+// removed and renamed (<sys/stat.h>), the same bits on every BSD that has
+// them.
+const (
+	bsdUFImmutable     = 0x00000002 // "uchg"
+	bsdUFAppend        = 0x00000004 // "uappnd"
+	bsdUFNounlink      = 0x00000010 // "uunlnk" (FreeBSD, DragonFly)
+	freebsdUFReadonly  = 0x00001000 // "urdonly" (ZFS: DOS read-only)
+	bsdSFImmutable     = 0x00020000 // "schg"
+	bsdSFAppend        = 0x00040000 // "sappnd"
+	bsdSFNounlink      = 0x00100000 // "sunlnk" (FreeBSD, DragonFly)
+	bsdRestrictingBase = bsdUFImmutable | bsdUFAppend | bsdSFImmutable | bsdSFAppend
+)
+
+// The flags a restore clears from a file it finds in its way before it
+// changes it (ClearRestrictingFlags), per system: immutable, append-only
+// and undeletable, the owner's and the system's, and on FreeBSD ZFS's DOS
+// read-only, which refuses writes too.  The late flags pass sets the
+// node's.
+const (
+	freebsdRestrictingFlags   = bsdRestrictingBase | bsdUFNounlink | bsdSFNounlink | freebsdUFReadonly
+	netbsdRestrictingFlags    = bsdRestrictingBase
+	openbsdRestrictingFlags   = bsdRestrictingBase
+	dragonflyRestrictingFlags = bsdRestrictingBase | bsdUFNounlink | bsdSFNounlink
+)
+
 // freebsdUFArchive is FreeBSD's UF_ARCHIVE ("uarch"), which ZFS sets on
 // every file it creates or writes to, as Windows does its archive bit.
 const freebsdUFArchive = 0x00000800
