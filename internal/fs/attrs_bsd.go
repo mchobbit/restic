@@ -256,6 +256,7 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		return nil
 	}
 	var errs []error
+	var unsupported ACLsWarning
 	set := false
 	restore := func(typ data.GenericAttributeType, aclType int, failed func(acl []aclEntry)) {
 		var acl []aclEntry
@@ -271,10 +272,12 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		if err := setACL(path, aclType, acl); err != nil {
 			if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.ENOTSUP) {
 				// A file system without ACLs (NetBSD's FFSv1 and plain
-				// FFSv2, UFS mounted without them): a warning (SPEC2 7.1).
-				err = &UnsupportedError{Attr: typ, Err: err}
+				// FFSv2, UFS mounted without them): one warning per
+				// file, naming each (SPEC2 7.1).
+				unsupported.add(path, typ, err)
+			} else {
+				errs = append(errs, err)
 			}
-			errs = append(errs, err)
 			if failed != nil {
 				failed(acl)
 			}
@@ -295,6 +298,9 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 		}
 	})
 	restore(osACLs.aclDefault, aclTypeDefault, nil)
+	if unsupported.Attrs != nil {
+		errs = append(errs, &unsupported)
+	}
 	if set && osACLs.aclSetsMtime {
 		err := utimesNano(path, node.AccessTime.UnixNano(), node.ModTime.UnixNano(), node.Type)
 		if err != nil {

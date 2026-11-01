@@ -11,11 +11,9 @@ import (
 
 // UnsupportedError is metadata that the target file system can't hold: an
 // inode flag, file flag, ZFS DOS flag or project ID refused with ENOTTY,
-// EOPNOTSUPP or EINVAL, a FreeBSD or NetBSD ACL refused with EOPNOTSUPP, or
-// ZFS DOS flags for a file system that isn't ZFS.  The restorer warns about
-// it once per attribute and bits, and
-// carries on: it is not a failed restore.  Every other failure stays an
-// error.
+// EOPNOTSUPP or EINVAL, or ZFS DOS flags for a file system that isn't ZFS.
+// The restorer warns about it once per attribute and bits, and carries on:
+// it is not a failed restore.  Every other failure stays an error.
 type UnsupportedError struct {
 	Attr data.GenericAttributeType
 	Bits uint64 // the file flags refused; 0 for other attributes
@@ -95,6 +93,42 @@ func (w *XattrsWarning) Unwrap() error {
 	return w.Err
 }
 
+// ACLsWarning is the ACLs of a file that the target file system doesn't
+// support (EOPNOTSUPP on FreeBSD and NetBSD: UFS mounted without ACLs,
+// NetBSD's FFSv1 and plain FFSv2).  The restorer warns once per file, naming
+// each (SPEC2 7.1), as rustic-bko does, and carries on.
+type ACLsWarning struct {
+	Path  string
+	Attrs []data.GenericAttributeType
+	Err   error // the first refusal's errno, or else its error
+}
+
+// add adds the ACL attr of path, which setting refused with err.
+func (w *ACLsWarning) add(path string, attr data.GenericAttributeType, err error) {
+	w.Path = path
+	w.Attrs = append(w.Attrs, attr)
+	if w.Err == nil {
+		var errno syscall.Errno
+		if errors.As(err, &errno) {
+			err = errno
+		}
+		w.Err = err
+	}
+}
+
+func (w *ACLsWarning) Error() string {
+	names := make([]string, len(w.Attrs))
+	for i, attr := range w.Attrs {
+		names[i] = string(attr)
+	}
+	return fmt.Sprintf("%v: ACLs %v not set, not supported by the target file system: %v",
+		w.Path, strings.Join(names, ", "), w.Err)
+}
+
+func (w *ACLsWarning) Unwrap() error {
+	return w.Err
+}
+
 // SIDWarning is a SID that idmap couldn't map to an id on illumos (idmapd
 // isn't running, say): the owner or group of a file (illumos.owner_sid,
 // illumos.group_sid), or the user or group of an ACL entry (illumos.acl,
@@ -116,17 +150,18 @@ func (w *SIDWarning) Unwrap() error {
 }
 
 // IsWarning tells whether err is one the restorer only warns about: an
-// UnsupportedError, a FlagsWarning, a NotRootWarning, an XattrsWarning, a
-// SIDWarning or a data.MalformedAttributeError.
+// UnsupportedError, a FlagsWarning, a NotRootWarning, an XattrsWarning, an
+// ACLsWarning, a SIDWarning or a data.MalformedAttributeError.
 func IsWarning(err error) bool {
 	var unsupported *UnsupportedError
 	var flags *FlagsWarning
 	var notRoot *NotRootWarning
 	var xattrs *XattrsWarning
+	var acls *ACLsWarning
 	var sid *SIDWarning
 	var malformed *data.MalformedAttributeError
 	return errors.As(err, &unsupported) || errors.As(err, &flags) || errors.As(err, &notRoot) ||
-		errors.As(err, &xattrs) || errors.As(err, &sid) || errors.As(err, &malformed)
+		errors.As(err, &xattrs) || errors.As(err, &acls) || errors.As(err, &sid) || errors.As(err, &malformed)
 }
 
 // BackupWarning is something a backup couldn't keep for a reason that isn't

@@ -70,3 +70,17 @@ func TestNotRootErrors(t *testing.T) {
 	rtest.Equals(t, other.Error(), rest.Error())
 	rtest.Equals(t, 1, len(warnings))
 }
+
+func TestACLsWarning(t *testing.T) {
+	path := "/restore/dir"
+	var w ACLsWarning
+	w.add(path, data.TypeFreeBSDACLAccess, &os.PathError{Op: "__acl_set_link", Path: path, Err: syscall.EOPNOTSUPP})
+	w.add(path, data.TypeFreeBSDACLDefault, &os.PathError{Op: "__acl_set_link", Path: path, Err: syscall.EINVAL})
+	failed := errors.New("utimes failed")
+	rest, warnings := SplitWarnings(errors.Join(failed, &w))
+	rtest.Equals(t, failed.Error(), rest.Error())
+	rtest.Equals(t, []error{&w}, warnings)
+	rtest.Assert(t, errors.Is(&w, syscall.EOPNOTSUPP), "%v doesn't wrap the first errno", &w)
+	rtest.Equals(t, path+": ACLs freebsd.acl_access, freebsd.acl_default not set, not supported by the target file system: "+
+		syscall.EOPNOTSUPP.Error(), w.Error())
+}

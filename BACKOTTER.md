@@ -136,8 +136,8 @@ new restic release rather than merged.
   system namespace (`system.NAME`) in a warning of their own, and the
   restore still exits 0; stock restic says nothing.  Where it doesn't
   support ACLs (`EOPNOTSUPP` on FreeBSD and NetBSD), restic warns once per
-  kind of ACL, with the number of files, and the restore still exits 0, as
-  in rustic-bko; without a POSIX.1e ACL, it narrows the group bits to the
+  file, naming each ACL not set, and the restore still exits 0, as in
+  rustic-bko; without a POSIX.1e ACL, it narrows the group bits to the
   owning group's own access, so a file never comes back more open.
 - Birth times are restored just before the atime and mtime.  illumos sets
   any `crtime` through the file's `SUNWattr_rw` view, with a packed nvlist
