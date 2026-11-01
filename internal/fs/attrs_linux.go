@@ -142,20 +142,41 @@ func nodeFillOSAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
 // symlink, FIFO, socket or device can't be opened for FS_IOC_FSSETXATTR
 // without following it or side effects.  A file system without project IDs
 // gives an *UnsupportedError, a malformed one a
-// data.MalformedAttributeError, for the restorer to warn about.
+// data.MalformedAttributeError, for the restorer to warn about.  On
+// bcachefs a file without one gets 0, where it inherited another from its
+// directory (whose project ID the restore gives it before its entries,
+// PrepareDirForOptions); elsewhere a project ID of 0 is left as it is.
 func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	id, ok, err := node.ProjectID()
-	if !ok || err != nil {
+	if err != nil {
 		return err
 	}
 	if node.Type != data.NodeTypeFile && node.Type != data.NodeTypeDir {
 		return nil
 	}
+	if !ok && !isBcachefsPath(path) {
+		return nil
+	}
 	fd, err := openForFlags(path, node.Type, nil)
 	if err != nil {
+		if !ok {
+			debug.Log("project ID of %v not checked: %v", path, err)
+			return nil
+		}
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
+	err = restoreProjectID(fd, path, id)
+	if err != nil && !ok {
+		debug.Log("project ID 0 not restored on %v: %v", path, err)
+		return nil
+	}
+	return err
+}
+
+// restoreProjectID gives the regular file or directory open as fd, at path,
+// the project ID id, unless it has it already (fileProjectID).
+func restoreProjectID(fd int, path string, id uint32) error {
 	unsupported := func(err error) error {
 		if unsupportedErr(err) {
 			return &UnsupportedError{Attr: data.TypeLinuxProjectID, Err: err}
@@ -174,6 +195,56 @@ func nodeRestoreOSAttributes(node *data.Node, path string) error {
 		return unsupported(&os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err})
 	}
 	return nil
+}
+
+// isBcachefsPath tells whether path (followed, if a symlink) is on
+// bcachefs.
+func isBcachefsPath(path string) bool {
+	var st unix.Statfs_t
+	return unix.Statfs(path, &st) == nil && uint32(st.Type) == bcachefsSuperMagic
+}
+
+// bcachefsOption tells whether the extended attribute name is one of a
+// bcachefs file's own options (bcachefs.compression, .data_replicas,
+// .background_target, .nocow and the rest) that the restore sets.
+func bcachefsOption(name string) bool {
+	return strings.HasPrefix(name, "bcachefs.") && xattrKept(name)
+}
+
+// PrepareDirForOptions gives the directory at path, which the restore has
+// just created or found empty, the options its node has that bcachefs
+// passes to the entries a directory gets after they are set: its own
+// bcachefs.* options (those xattrSelectFilter selects) and its project ID,
+// 0 where it has none.  Its entries then inherit them as in the original,
+// so their data is stored as it was (compressed, replicated, on the same
+// targets) and their project ID comes back inherited.  Only on bcachefs;
+// errors are left for the directory's metadata, which sets them all again,
+// to report.
+func PrepareDirForOptions(path string, node *data.Node, xattrSelectFilter func(xattrName string) bool) {
+	if node == nil || node.Type != data.NodeTypeDir || !isBcachefsPath(path) {
+		return
+	}
+	fd, err := openForFlags(path, data.NodeTypeDir, nil)
+	if err != nil {
+		debug.Log("options of %v not set early: %v", path, err)
+		return
+	}
+	defer func() { _ = unix.Close(fd) }()
+	for _, attr := range node.ExtendedAttributes {
+		if !bcachefsOption(attr.Name) || !xattrSelectFilter(attr.Name) {
+			continue
+		}
+		if err := unix.Fsetxattr(fd, attr.Name, attr.Value, 0); err != nil {
+			debug.Log("%v of %v not set early: %v", attr.Name, path, err)
+		}
+	}
+	id, _, err := node.ProjectID()
+	if err != nil {
+		return
+	}
+	if err := restoreProjectID(fd, path, id); err != nil {
+		debug.Log("project ID of %v not set early: %v", path, err)
+	}
 }
 
 func nodeRestoreACLs(_ *data.Node, _ string) error {

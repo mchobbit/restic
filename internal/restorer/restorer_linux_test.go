@@ -84,6 +84,17 @@ func TestRestorerCasefoldOrder(t *testing.T) {
 		calls = append(calls, call{path, flags, len(entries) == 0})
 		return nil
 	}
+	// BackOtter: the bcachefs options go on at the same time, from the
+	// directory's own node.
+	var optionCalls []call
+	defer func(prepare func(string, *data.Node, func(string) bool)) { prepareDirForOptions = prepare }(prepareDirForOptions)
+	prepareDirForOptions = func(path string, node *data.Node, _ func(string) bool) {
+		entries, err := os.ReadDir(path)
+		rtest.OK(t, err)
+		rtest.Assert(t, node != nil && node.Type == data.NodeTypeDir, "%v: node %v", path, node)
+		flags, _, _ := fs.NodeFileFlags(node)
+		optionCalls = append(optionCalls, call{path, flags, len(entries) == 0})
+	}
 
 	folded := &FileAttributes{}
 	repo := repository.TestRepository(t)
@@ -104,7 +115,8 @@ func TestRestorerCasefoldOrder(t *testing.T) {
 			want[i].empty = true
 		}
 		rtest.Equals(t, want, calls)
-		calls = nil
+		rtest.Equals(t, want, optionCalls)
+		calls, optionCalls = nil, nil
 	}
 
 	// A whole snapshot: every directory but the target.

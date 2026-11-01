@@ -605,13 +605,18 @@ func (res *Restorer) ensureDir(target string) error {
 // prepareDirForFlags is fs.PrepareDirForFlags, replaced by tests.
 var prepareDirForFlags = fs.PrepareDirForFlags
 
-// ensureDirWithFlags is ensureDir for a directory whose node has the file
-// flags flags (0 for none).  When it creates the directory, or finds it
+// prepareDirForOptions is fs.PrepareDirForOptions, replaced by tests.
+var prepareDirForOptions = fs.PrepareDirForOptions
+
+// ensureDirWithFlags is ensureDir for a directory with node node, whose file
+// flags are flags (0 for none).  When it creates the directory, or finds it
 // empty, it makes those flags that a file system only changes on an empty
 // directory (casefolding) what flags says at once, before anything goes in:
 // it sets them, or clears them where the directory inherited them.  The
-// others are set last, with restoreFileFlags.
-func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
+// others are set last, with restoreFileFlags.  BackOtter: on bcachefs it
+// also gives the directory then its options and project ID, which bcachefs
+// passes only to entries created after them (fs.PrepareDirForOptions).
+func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags uint32) error {
 	if res.opts.DryRun {
 		return nil
 	}
@@ -619,6 +624,7 @@ func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
 	// would refuse its getting entries, metadata or being replaced
 	// (fs.ClearRestrictingFlags); the late flags pass sets the node's.
 	fs.ClearRestrictingFlags(target)
+	// Linux is the only system with either (fs.PrepareDirForOptions).
 	if !fs.HasDirFlagsBeforeEntries() {
 		return res.ensureDir(target)
 	}
@@ -637,7 +643,9 @@ func (res *Restorer) ensureDirWithFlags(target string, flags uint32) error {
 			return nil
 		}
 	}
-	return prepareDirForFlags(target, flags)
+	err = prepareDirForFlags(target, flags)
+	prepareDirForOptions(target, node, res.XattrSelectFilter)
+	return err
 }
 
 // pendingDir is a directory that isn't selected for the restore, but may
@@ -659,7 +667,7 @@ func (res *Restorer) ensureParents() error {
 			continue
 		}
 		flags, _ := res.nodeFileFlags(p.node, p.location)
-		if err := res.ensureDirWithFlags(p.target, flags); err != nil {
+		if err := res.ensureDirWithFlags(p.target, p.node, flags); err != nil {
 			return err
 		}
 		p.done = true
@@ -716,7 +724,7 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				return err
 			}
 			flags, _ := res.nodeFileFlags(node, location)
-			return res.ensureDirWithFlags(target, flags)
+			return res.ensureDirWithFlags(target, node, flags)
 		},
 
 		visitNode: func(node *data.Node, target, location string) error {

@@ -20,11 +20,20 @@ import (
 // directory, and its project ID: derived, and setting one does nothing.
 const bcachefsEffective = "bcachefs_effective."
 
+// bcachefsOwnProject is the extended attribute in which bcachefs shows a
+// project ID a file was given, not inherited (bcachefs 1.39 lists it; Linux
+// 6.12's doesn't).  The project ID is kept as linux.project_id; bcachefs refuses to
+// have the attribute set to anything but 0 (EINVAL).
+const bcachefsOwnProject = "bcachefs.project"
+
 // xattrKept tells whether the extended attribute name is backed up and
 // restored.  BackOtter: not bcachefs_effective.* (Linux), which stock restic
-// keeps; rustic-bko leaves them out too.
+// keeps, nor bcachefs.project, which linux.project_id carries; rustic-bko
+// leaves them out too.  A restore neither sets nor removes them, whatever a
+// snapshot holds.
 func xattrKept(name string) bool {
-	return runtime.GOOS != "linux" || !strings.HasPrefix(name, bcachefsEffective)
+	return runtime.GOOS != "linux" ||
+		!strings.HasPrefix(name, bcachefsEffective) && name != bcachefsOwnProject
 }
 
 func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilter func(xattrName string) bool) error {

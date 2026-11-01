@@ -98,7 +98,15 @@ new restic release rather than merged.
     by a restore to see whether the file has the ID already, as in
     rustic-bko.  The restore sets it with `FS_IOC_FSSETXATTR`, as anywhere
     (setting the attribute does nothing); the attribute itself isn't kept
-    (below).
+    (below).  On bcachefs a directory gets its project ID, with its own
+    options, as soon as the restore creates it (S6), and its entries
+    inherit it then; the restore gives no file an ID it has already, so an
+    entry that inherited its ID in the original comes back inheriting it,
+    with no `bcachefs.project` of its own, and there a node without
+    `linux.project_id` gets 0 where the file inherited another.  Elsewhere
+    a node without one leaves the file's ID as it is.  Accepted difference
+    (both tools): a bcachefs file given its directory's project ID by hand
+    comes back inheriting it.
   - `linux.zfs_dos_flags`: the DOS flags OpenZFS keeps on Linux
     (`ZFS_IOC_GETDOSFLAGS`), as a number: readonly, hidden, system,
     archive, nounlink, offline and sparse (mask `0x302f00000000`).
@@ -275,7 +283,12 @@ new restic release rather than merged.
   they show the options a file has, its own (`bcachefs.*`, which are kept)
   or inherited from its directory, and its project ID (`linux.project_id`,
   read from `bcachefs_effective.project`), and setting one succeeds but
-  does nothing.  Stock restic keeps them.
+  does nothing.  Nor is `bcachefs.project`, which bcachefs 1.39 (not Linux
+  6.12's) lists for a file given a project ID rather than inheriting it:
+  `linux.project_id` carries the ID, and bcachefs refuses to have the
+  attribute set to anything but 0 (`EINVAL`), so a restore of a snapshot
+  that holds it (from an earlier build) skips it.  Stock restic keeps them
+  all.
 - Times in nodes (and `unix.birthtime`, `illumos.xattr_meta`) are written
   in UTC with `Z`, as stock restic writes them; stock rustic writes the
   same instants with `+00:00`.  Both tools read either form (any offset),
@@ -412,7 +425,16 @@ own addition, made after that plan with the sparse-file work (batch 3).
   still differs from its node's at the end (it had entries, or the file
   system can't casefold), restic warns "casefolding (F) not restored on
   PATH: directory not empty or not supported", once per directory.  That is
-  a warning, not an error.
+  a warning, not an error.  On bcachefs the same directories (those created,
+  or found empty) get their own options then too, before anything goes in:
+  their `bcachefs.*` extended attributes (those `--include-xattr` and
+  `--exclude-xattr` select) and their project ID, 0 where the node has
+  none.  bcachefs passes a directory's options only to entries created
+  after they are set, so set at the end with the other metadata the
+  entries would lose the compression, replicas, targets or nocow they
+  inherited, and get their project ID as their own.  Errors there are
+  silent: the directory's metadata at the end sets them all again, and
+  reports them.  As rustic-bko does.
 - **S7 Late inode flags on Linux.**  After everything else, each file's kept
   flags but F are set to its node's, keeping the file system's own flags and
   F as they are; when that changes nothing, there is no `FS_IOC_SETFLAGS`

@@ -89,6 +89,8 @@ func TestXattrKept(t *testing.T) {
 		"user.backotter":                 true,
 		"trusted.backotter":              true,
 		"bcachefs.compression":           true,
+		"bcachefs.project":               false,
+		"bcachefs.projectx":              true,
 		"bcachefs_effective.project":     false,
 		"bcachefs_effective.compression": false,
 	} {
