@@ -307,3 +307,40 @@ func TestNodeRestoreMetadataError(t *testing.T) {
 		func(_ string) bool { return true }, false)
 	rtest.Assert(t, errors.Is(err, os.ErrNotExist), "failed for an unexpected reason")
 }
+
+// BackOtter: a node without an mtime (rustic's nodes for the directories
+// above the backed-up path) leaves the restored file's times alone, and a
+// node without an atime gets its mtime, as rustic's restore does.
+func TestNodeTimesMissing(t *testing.T) {
+	mtime := time.Date(2020, 5, 6, 7, 8, 9, 123456789, time.UTC)
+	atime := time.Date(2021, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	_, _, ok := nodeTimes(&data.Node{})
+	rtest.Assert(t, !ok, "a node without times gave times")
+	_, _, ok = nodeTimes(&data.Node{AccessTime: atime})
+	rtest.Assert(t, !ok, "a node without an mtime gave times")
+
+	a, m, ok := nodeTimes(&data.Node{ModTime: mtime})
+	rtest.Assert(t, ok && a == mtime.UnixNano() && m == mtime.UnixNano(),
+		"node without an atime: got %v %v %v, want the mtime twice", a, m, ok)
+	a, m, ok = nodeTimes(&data.Node{ModTime: mtime, AccessTime: atime})
+	rtest.Assert(t, ok && a == atime.UnixNano() && m == mtime.UnixNano(),
+		"node with both times: got %v %v %v", a, m, ok)
+
+	dir := filepath.Join(t.TempDir(), "above")
+	rtest.OK(t, os.Mkdir(dir, 0o755))
+	before, err := os.Lstat(dir)
+	rtest.OK(t, err)
+	rtest.OK(t, nodeRestoreTimestamps(&data.Node{Type: data.NodeTypeDir, Mode: 0o755}, dir))
+	after, err := os.Lstat(dir)
+	rtest.OK(t, err)
+	rtest.Assert(t, after.ModTime().Equal(before.ModTime()),
+		"mtime changed from %v to %v", before.ModTime(), after.ModTime())
+
+	rtest.OK(t, nodeRestoreTimestamps(&data.Node{Type: data.NodeTypeDir, ModTime: mtime}, dir))
+	after, err = os.Lstat(dir)
+	rtest.OK(t, err)
+	// Windows and some file systems keep less than nanoseconds.
+	rtest.Assert(t, after.ModTime().Unix() == mtime.Unix(),
+		"mtime %v, want %v", after.ModTime(), mtime)
+}

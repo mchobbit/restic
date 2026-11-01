@@ -411,15 +411,37 @@ func nodeRestoreMetadata(node *data.Node, path string, warn func(msg string), xa
 	return errors.Join(errs...)
 }
 
-func nodeRestoreTimestamps(node *data.Node, path string) error {
-	atime := node.AccessTime.UnixNano()
-	mtime := node.ModTime.UnixNano()
+// nodeTimes gives the atime and mtime a restore sets, and false for a node
+// without an mtime, whose times are left as the restore made them.
+//
+// BackOtter: rustic stores the directories above the backed-up path with no
+// times (rustic_core's BACKOTTER.md); its restore leaves such a node's times
+// alone, and a node without an atime gets its mtime.  restic does the same:
+// the zero time.Time has no Unix time in nanoseconds (UnixNano's result is
+// undefined before 1678), which DragonFly's utimensat refuses with EINVAL
+// and other systems set as some time centuries ago.
+func nodeTimes(node *data.Node) (atime, mtime int64, ok bool) {
+	if node.ModTime.IsZero() {
+		return 0, 0, false
+	}
+	mtime = node.ModTime.UnixNano()
+	atime = mtime
+	if !node.AccessTime.IsZero() {
+		atime = node.AccessTime.UnixNano()
+	}
+	return atime, mtime, true
+}
 
+func nodeRestoreTimestamps(node *data.Node, path string) error {
 	// BackOtter: the birth time goes just before the atime and mtime: on
 	// FreeBSD and NetBSD it is set as an earlier mtime, which they replace
 	// (birthtime.go).  Its errors are reported with theirs, and don't keep
 	// them from being set.
 	birthErr := nodeRestoreBirthTime(node, fixpath(path))
+	atime, mtime, ok := nodeTimes(node)
+	if !ok {
+		return birthErr
+	}
 	if err := utimesNano(fixpath(path), atime, mtime, node.Type); err != nil {
 		return errors.Join(birthErr, fmt.Errorf("failed to restore timestamp of %q: %w", path, err))
 	}

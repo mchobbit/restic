@@ -294,6 +294,14 @@ new restic release rather than merged.
   same instants with `+00:00`.  Both tools read either form (any offset),
   so the two differ only in a snapshot's bytes, never in what a restore
   sets.
+- A node without an mtime gets no times at restore: the file keeps the
+  times the restore gave it.  A node without an atime gets its mtime as
+  its atime.  rustic-bko writes such nodes for the directories above the
+  backed-up path (`/home` in a backup of `/home/m`; its BACKOTTER.md), and
+  restores them this way; stock restic set the zero time, whose Unix time
+  in nanoseconds Go leaves undefined, which DragonFly refuses (`EINVAL`,
+  so a whole-snapshot restore exited 1) and other systems set as some
+  date centuries ago.  The birth time, if the node has one, is still set.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 

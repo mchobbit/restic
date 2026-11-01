@@ -15,7 +15,8 @@ import (
 
 func TestRestoreSymlinkTimestampsError(t *testing.T) {
 	d := t.TempDir()
-	node := data.Node{Type: data.NodeTypeSymlink}
+	// BackOtter: with an mtime; a node without one sets no times.
+	node := data.Node{Type: data.NodeTypeSymlink, ModTime: time.Unix(1, 0)}
 	err := nodeRestoreTimestamps(&node, d+"/nosuchfile")
 	rtest.Assert(t, errors.Is(err, fs.ErrNotExist), "want ErrNotExist, got %q", err)
 	rtest.Assert(t, strings.Contains(err.Error(), d), "filename not in %q", err)

@@ -307,8 +307,8 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 	if unsupported.Attrs != nil {
 		errs = append(errs, &unsupported)
 	}
-	if set && osACLs.aclSetsMtime {
-		err := utimesNano(path, node.AccessTime.UnixNano(), node.ModTime.UnixNano(), node.Type)
+	if atime, mtime, ok := nodeTimes(node); ok && set && osACLs.aclSetsMtime {
+		err := utimesNano(path, atime, mtime, node.Type)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to restore timestamp of %q: %w", path, err))
 		}
