@@ -30,7 +30,30 @@ func SkipHoles(f File, node *data.Node) io.Reader {
 	if sparse, err := node.Sparse(); err != nil || !sparse {
 		return f
 	}
-	return &holeReader{f: lf.f, name: lf.name}
+	return &holeReader{f: osExtents{lf.f}, name: lf.name}
+}
+
+// extentFile is what holeReader reads: an *os.File (osExtents), or a
+// simulated file in tests.
+type extentFile interface {
+	ReadAt(p []byte, off int64) (int, error)
+	// Seek is lseek(2), with seekData and seekHole.
+	Seek(offset int64, whence int) (int64, error)
+	// Size is fstat(2)'s size.
+	Size() (int64, error)
+}
+
+// osExtents is the extentFile of an open file.
+type osExtents struct {
+	*os.File
+}
+
+func (f osExtents) Size() (int64, error) {
+	fi, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
 }
 
 // holeReader reads a file by its data extents.  Up to end, the file is a
@@ -39,9 +62,11 @@ func SkipHoles(f File, node *data.Node) io.Reader {
 // file has no data left but its trailing hole, the rest is read as data, as
 // plain reading does: up to whatever end of file pread finds, so that a file
 // that grows or shrinks while it is read gives no more trouble than it does
-// to plain reading.
+// to plain reading.  A hole ends at the file's size when each buffer of its
+// zeros is given, so that a file that shrank meanwhile ends where plain
+// reading ends it.
 type holeReader struct {
-	f    *os.File
+	f    extentFile
 	name string
 	off  int64 // the offset of the next byte to give
 	end  int64 // where the extent off is in ends
@@ -59,6 +84,17 @@ func (r *holeReader) Read(p []byte) (int, error) {
 	}
 	if r.off >= r.end {
 		r.next()
+	}
+	if r.hole {
+		// The file may have shrunk since the hole was found: the hole
+		// ends at its size now, and from there on the file is read
+		// plainly (to its end of file, which pread finds).
+		if size, err := r.f.Size(); err == nil && size < r.end {
+			r.end = size
+			if r.off >= size {
+				r.hole, r.end = false, plain
+			}
+		}
 	}
 	if int64(len(p)) > r.end-r.off {
 		p = p[:r.end-r.off]
@@ -82,24 +118,34 @@ func (r *holeReader) Read(p []byte) (int, error) {
 func (r *holeReader) next() {
 	// The size before SEEK_DATA, so that data appended after it isn't taken
 	// for a hole.
-	size := int64(-1)
-	if fi, err := r.f.Stat(); err == nil {
-		size = fi.Size()
+	size, err := r.f.Size()
+	if err != nil {
+		size = -1
 	}
 	start, err := r.f.Seek(r.off, seekData)
 	switch {
 	case errors.Is(err, unix.ENXIO):
 		// No data from r.off on: a hole up to the end of file (the size
 		// before SEEK_DATA, or after it if smaller), or r.off is at the end.
+		// A hole only where SEEK_HOLE finds one at r.off too: macOS answers
+		// ENXIO to both at every offset of a file its file system
+		// compresses, whose data plain reading gives.
 		r.hole, r.end = false, plain
-		if fi, err := r.f.Stat(); err == nil && min(size, fi.Size()) > r.off {
-			r.hole, r.end = true, min(size, fi.Size())
+		if now, err := r.f.Size(); err == nil && min(size, now) > r.off {
+			if hole, err := r.f.Seek(r.off, seekHole); err == nil && hole == r.off {
+				r.hole, r.end = true, min(size, now)
+			}
 		}
 	case err != nil:
 		debug.Log("no SEEK_DATA for %v at %d: %v", r.name, r.off, err)
 		r.hole, r.end = false, plain
 	case start > r.off:
-		r.hole, r.end = true, start
+		// A hole up to the data, but not past the size before SEEK_DATA
+		// (which a correct file system never puts data past).
+		r.hole, r.end = false, plain
+		if min(start, size) > r.off {
+			r.hole, r.end = true, min(start, size)
+		}
 	default:
 		hole, err := r.f.Seek(r.off, seekHole)
 		if err != nil || hole <= r.off {

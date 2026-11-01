@@ -76,9 +76,9 @@ func TestRestorerSparseMarkerExistingTarget(t *testing.T) {
 	}
 }
 
-// A file restored sparse gets every all-zero block of the file system wholly
-// inside one of its blobs as a hole, not only each blob's leading zeros: it
-// takes no more blocks than the blocks its blobs' data touch, give or take
+// A file restored sparse gets every block of the file system its blobs put
+// no byte other than zero in as a hole, not only each blob's leading zeros:
+// it takes no more blocks than those its blobs' data are in, give or take
 // the file system's own.
 func TestRestorerSparseBlocks(t *testing.T) {
 	const mib = 1 << 20
@@ -118,7 +118,7 @@ func TestRestorerSparseBlocks(t *testing.T) {
 	rtest.OK(t, err)
 	bs := fs.HoleBlockSize(f)
 	rtest.OK(t, f.Close())
-	// the blocks writeSparse writes into
+	// the blocks writeSparse writes into: those with data
 	touched := map[int64]bool{}
 	var offset int64
 	for _, p := range parts {
@@ -131,6 +131,14 @@ func TestRestorerSparseBlocks(t *testing.T) {
 		rtest.OK(t, err)
 		offset += int64(len(p))
 	}
+	// which are the blocks of the file with a byte other than zero
+	dataBlocks := map[int64]bool{}
+	for i := range content {
+		if content[i] != 0 {
+			dataBlocks[int64(i)/bs] = true
+		}
+	}
+	rtest.Equals(t, dataBlocks, touched)
 	want := int64(len(touched)) * bs
 	got := getBlockCount(t, path) * 512
 	t.Logf("%d bytes restored in %d bytes of blocks, %d blocks of %d touched (%d bytes)", len(content), got, len(touched), bs, want)
@@ -143,4 +151,39 @@ func TestRestorerSparseBlocks(t *testing.T) {
 	}
 	// some slack for the file system's own blocks (extent trees, ...)
 	rtest.Assert(t, got <= want+64<<10, "%d bytes allocated, more than the %d written", got, want)
+}
+
+// A file backed up without its contents (illumos.unread_size) that is marked
+// sparse too comes back empty all the same: no hole, no size.
+func TestRestorerUnreadSparse(t *testing.T) {
+	marks := func(_ *FileAttributes, isDir bool) map[data.GenericAttributeType]json.RawMessage {
+		if isDir {
+			return nil
+		}
+		return map[data.GenericAttributeType]json.RawMessage{
+			data.TypeIllumosUnreadSize: json.RawMessage(`1048576`),
+			data.TypeUnixSparse:        json.RawMessage(`true`),
+		}
+	}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{"file": File{Data: ""}},
+	}, marks)
+	for _, sparse := range []bool{false, true} {
+		dst := rtest.TempDir(t)
+		target := filepath.Join(dst, "file")
+		// over a file with contents too
+		rtest.OK(t, os.WriteFile(target, []byte("stale"), 0o600))
+		res := NewRestorer(repo, sn, Options{Sparse: sparse})
+		var warnings []string
+		res.Warn = func(message string) {
+			warnings = append(warnings, message)
+		}
+		_, err := res.RestoreTo(context.TODO(), dst)
+		rtest.OK(t, err)
+		fi, err := os.Stat(target)
+		rtest.OK(t, err)
+		rtest.Equals(t, int64(0), fi.Size())
+		rtest.Equals(t, []string{"/file: contents were not backed up (av_quarantined at backup, 1048576 bytes)"}, warnings)
+	}
 }
