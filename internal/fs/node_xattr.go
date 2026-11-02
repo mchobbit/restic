@@ -58,8 +58,13 @@ func casefoldWarning(path string) error {
 	return &FlagsWarning{Msg: fmt.Sprintf("casefolding (%v) not restored on %v: directory not empty", bcachefsCasefold, path)}
 }
 
-// setxattrFunc is setxattr, replaced by tests.
-var setxattrFunc = setxattr
+// setxattrFunc, listxattrFunc and removexattrFunc are setxattr, listxattr
+// and removexattr, replaced by tests.
+var (
+	setxattrFunc    = setxattr
+	listxattrFunc   = listxattr
+	removexattrFunc = removexattr
+)
 
 // selinuxLabel is the extended attribute that holds a file's SELinux label.
 const selinuxLabel = "security.selinux"
@@ -92,7 +97,7 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 	// value it has, which the directory got as soon as the restore created
 	// it (PrepareDirForOptions).  The file's attributes are listed first;
 	// those it doesn't list are all set.
-	xattrs, listErr := listxattr(path)
+	xattrs, listErr := listxattrFunc(path)
 	present := make(map[string]struct{}, len(xattrs))
 	for _, name := range xattrs {
 		present[name] = struct{}{}
@@ -133,7 +138,7 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 		// Only attempt to remove xattrs that match the filter
 		// BackOtter: nor the SELinux label (xattrNeverRemoved).
 		if xattrSelectFilter(name) && xattrKept(name) && !xattrNeverRemoved(name) {
-			err := removexattr(path, name)
+			err := removexattrFunc(path, name)
 			switch {
 			case casefoldNotEmpty(name, err):
 				errs = append(errs, casefoldWarning(path))

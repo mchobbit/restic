@@ -159,3 +159,56 @@ func TestRestoreCasefoldNotEmptyIsWarning(t *testing.T) {
 	err = nodeRestoreExtendedAttributes(node, dir, all)
 	rtest.Assert(t, err != nil && !IsWarning(err), "ENOTEMPTY for user.notempty: %v", err)
 }
+
+// BackOtter: the same for removing bcachefs.casefold from a directory whose
+// node hasn't got it: a warning, and the directory's other attributes are
+// still set and removed; ENOTEMPTY removing any other attribute stays an
+// error.
+func TestRestoreCasefoldNotEmptyRemoveIsWarning(t *testing.T) {
+	dir := t.TempDir()
+	if err := setxattr(dir, "user.old", []byte("x")); xattrUnsupported(err) {
+		t.Skipf("file system without extended attributes: %v", err)
+	}
+
+	// The directory lists the refused one too, which no file system here
+	// can have.
+	refused := bcachefsCasefold
+	defer func(orig func(path string) ([]string, error)) { listxattrFunc = orig }(listxattrFunc)
+	listxattrFunc = func(path string) ([]string, error) {
+		names, err := listxattr(path)
+		return append(names, refused), err
+	}
+	defer func(orig func(path, name string) error) { removexattrFunc = orig }(removexattrFunc)
+	removexattrFunc = func(path, name string) error {
+		if name == refused {
+			return &os.PathError{Op: "removexattr " + name, Path: path, Err: syscall.ENOTEMPTY}
+		}
+		return removexattr(path, name)
+	}
+
+	all := func(string) bool { return true }
+	node := &data.Node{Type: data.NodeTypeDir, ExtendedAttributes: []data.ExtendedAttribute{
+		{Name: "user.new", Value: []byte("n")},
+	}}
+	err := nodeRestoreExtendedAttributes(node, dir, all)
+	rtest.Assert(t, err != nil, "no warning")
+	rtest.Assert(t, IsWarning(err), "not a warning: %v", err)
+	rest, warnings := SplitWarnings(err)
+	rtest.OK(t, rest)
+	rtest.Equals(t, 1, len(warnings))
+	rtest.Assert(t, strings.Contains(warnings[0].Error(), "casefolding (bcachefs.casefold) not restored on "+dir),
+		"warning %q", warnings[0])
+	names, err := listxattr(dir)
+	rtest.OK(t, err)
+	names = slices.DeleteFunc(names, func(name string) bool { return !strings.HasPrefix(name, "user.") })
+	rtest.Equals(t, []string{"user.new"}, names)
+
+	refused = "user.notempty"
+	rtest.OK(t, setxattr(dir, "user.old", []byte("x")))
+	err = nodeRestoreExtendedAttributes(node, dir, all)
+	rtest.Assert(t, err != nil && !IsWarning(err), "ENOTEMPTY removing user.notempty: %v", err)
+	names, err = listxattr(dir)
+	rtest.OK(t, err)
+	names = slices.DeleteFunc(names, func(name string) bool { return !strings.HasPrefix(name, "user.") })
+	rtest.Equals(t, []string{"user.new"}, names)
+}
