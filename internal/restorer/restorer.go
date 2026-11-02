@@ -1182,5 +1182,14 @@ func (res *Restorer) verifyFile(ctx context.Context, target string, node *data.N
 		offset += int64(length)
 	}
 
-	return &fileState{matches, sizeMatches}, buf, nil
+	state := &fileState{matches, sizeMatches}
+	// BackOtter: a file with other hard links that must be rewritten is
+	// replaced by a new, empty one (createFile), so none of its blobs can
+	// be kept: it is restored whole.  Keeping the blobs that matched gave a
+	// new file without them (NULs, or nothing when only its size was
+	// wrong), which the group's other names were then linked to.
+	if !failFast && state.NeedsRestore() && fs.ExtendedStat(fi).Links > 1 {
+		return nil, buf, nil
+	}
+	return state, buf, nil
 }

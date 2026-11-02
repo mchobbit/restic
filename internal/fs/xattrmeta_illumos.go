@@ -147,7 +147,7 @@ func restoreXattrMeta(dirfd int, path, name string, meta xattrMeta) (*SIDWarning
 		if err != nil {
 			errs = append(errs, &os.PathError{Op: "openat", Path: at, Err: err})
 		} else {
-			errs = append(errs, fdACL(fd, at).set(meta.ACL))
+			errs = append(errs, aceRefusal(at, data.TypeIllumosXattrMeta, fdACL(fd, at).set(meta.ACL)))
 			_ = unix.Close(fd)
 		}
 	}

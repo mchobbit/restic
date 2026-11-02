@@ -320,10 +320,33 @@ func nodeRestoreACLs(node *data.Node, path string) error {
 	if !ok || err != nil {
 		return err
 	}
-	if warning := acesWithIDs(data.TypeIllumosACL, entries); warning != nil {
-		return errors.Join(setACE(path, entries), warning)
+	warning := acesWithIDs(data.TypeIllumosACL, entries)
+	err = aceRefusal(path, data.TypeIllumosACL, setACE(path, entries))
+	if warning != nil {
+		return errors.Join(err, warning)
 	}
-	return setACE(path, entries)
+	return err
+}
+
+// aceUnsupported tells a refusal of ACE_SETACL that means the file system
+// has no NFSv4 ACLs (tmpfs and UFS have only POSIX-draft ones and answer
+// ENOSYS) from a failure.  EINVAL isn't one: ZFS gives it for an ACL it
+// won't take.
+func aceUnsupported(err error) bool {
+	return errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.ENOTSUP) || errors.Is(err, unix.EOPNOTSUPP)
+}
+
+// aceRefusal returns err, from setting the ACL attr of the file at path,
+// as an *ACLsWarning when the file system has no NFSv4 ACLs (S10): the
+// file keeps the mode restored before it, and the restore carries on and
+// exits 0, as in rustic-bko.
+func aceRefusal(path string, attr data.GenericAttributeType, err error) error {
+	if err == nil || !aceUnsupported(err) {
+		return err
+	}
+	var w ACLsWarning
+	w.add(path, attr, err)
+	return &w
 }
 
 // A symlink's own permissions don't matter on illumos.

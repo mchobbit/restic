@@ -4,6 +4,8 @@ package restorer
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -139,5 +141,70 @@ func TestRestorePermissions(t *testing.T) {
 		fi, err := os.Stat(path)
 		rtest.OK(t, err)
 		rtest.Equals(t, fs.FileMode(0o600), fi.Mode().Perm(), "unexpected permissions")
+	}
+}
+
+// BackOtter: restoring over a hard-link group whose file was changed (a line
+// appended, or bytes rewritten) gives each name the snapshot's contents.  A
+// file with other links is replaced by a new one when it is written, so the
+// blobs that still matched used to be left out of it: the group ended up
+// with NULs, or empty.
+func TestRestorerOverwriteChangedHardlinks(t *testing.T) {
+	const content = "linked\n"
+	snapshot := Snapshot{
+		Nodes: map[string]Node{
+			"a": File{Data: content, Links: 3, Inode: 7},
+			"b": File{Data: content, Links: 3, Inode: 7},
+			"c": File{Data: content, Links: 3, Inode: 7},
+		},
+	}
+	repo := repository.TestRepository(t)
+	tempdir := filepath.Join(rtest.TempDir(t), "target")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sn, _ := saveSnapshot(t, repo, snapshot, noopGetGenericAttributes)
+
+	for _, change := range []struct {
+		name   string
+		modify func(path string) error
+	}{
+		{"appended", func(path string) error {
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return err
+			}
+			_, err = f.WriteString("more\n")
+			return errors.Join(err, f.Close())
+		}},
+		{"rewritten", func(path string) error {
+			return os.WriteFile(path, []byte("LINKED\n"), 0o644)
+		}},
+		{"unchanged", func(string) error { return nil }},
+	} {
+		for _, overwrite := range []OverwriteBehavior{OverwriteAlways, OverwriteIfChanged} {
+			res := NewRestorer(repo, sn, Options{})
+			_, err := res.RestoreTo(ctx, tempdir)
+			rtest.OK(t, err)
+			rtest.OK(t, change.modify(filepath.Join(tempdir, "b")))
+
+			res = NewRestorer(repo, sn, Options{Overwrite: overwrite})
+			_, err = res.RestoreTo(ctx, tempdir)
+			rtest.OK(t, err)
+			var ino uint64
+			for _, name := range []string{"a", "b", "c"} {
+				path := filepath.Join(tempdir, name)
+				data, err := os.ReadFile(path)
+				rtest.OK(t, err)
+				what := fmt.Sprintf("%v, overwrite %v: %v", change.name, overwrite, name)
+				rtest.Equals(t, content, string(data), what+": contents")
+				fi, err := os.Lstat(path)
+				rtest.OK(t, err)
+				st := fi.Sys().(*syscall.Stat_t)
+				if name == "a" {
+					ino = uint64(st.Ino)
+				}
+				rtest.Equals(t, ino, uint64(st.Ino), what+": not linked to a")
+			}
+		}
 	}
 }

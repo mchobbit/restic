@@ -344,6 +344,20 @@ new restic release rather than merged.
   in it (`EINVAL`), a restore sets no birth time and says nothing, as on
   UFS, which has no view (debug log only); it had been an error per file
   and directory (exit 1).  The same in rustic-bko.
+- On a file system without NFSv4 ACLs (illumos tmpfs and UFS, which have
+  only POSIX-draft ones and refuse `ACE_SETACL` with `ENOSYS`; `ENOTSUP`
+  and `EOPNOTSUPP` too), an `illumos.acl`, or the ACL of an extended
+  attribute in `illumos.xattr_meta`, that can't be set is a warning per
+  file, naming it (S10): the file keeps the mode restored before it, which
+  ZFS made from the ACL, and the restore exits 0.  It had been an error
+  per file (exit 1), while rustic-bko warned and exited 0.  `EINVAL` (an
+  ACL ZFS won't take) stays an error.
+- A restore over a hard-linked file whose contents changed (a line
+  appended to one of its names, say) rewrites it whole.  restic replaces a
+  file with other links by a new one before writing it, but kept the
+  blobs that still matched out of the new file: the whole group came back
+  with NULs where they were, or empty (when only its size was wrong), with
+  no error.  Stock restic has the same bug.  rustic-bko was right.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 
@@ -383,8 +397,9 @@ own addition, made after that plan with the sparse-file work (batch 3).
   `--ownership-by-name`) gives them the IDs their user and group names have
   on the target instead; a name that is empty or unknown there falls back
   to the saved ID, never to 0.  A restore not running as root ignores the
-  ownership it can't set, as stock restic does (rustic-bko warns about each
-  file); any other metadata it isn't permitted to set (`EPERM`, `EACCES`:
+  ownership it can't set (`EPERM`, `EACCES`), as stock restic does, and so
+  does rustic-bko, which warned about each file (the root-owned directories
+  above the restored path, say); any other metadata it isn't permitted to set (`EPERM`, `EACCES`:
   `trusted.*` extended attributes, FreeBSD's system extended attributes,
   a project ID, ...) gets one warning per file, naming what wasn't set,
   and isn't an error.  The late file and inode flags stay errors (S10).
@@ -515,7 +530,10 @@ own addition, made after that plan with the sparse-file work (batch 3).
   DOS flags, restic warns once per attribute and refused bits, naming the
   first file, and gives the number of files at the end; the restore still
   exits 0.  On FreeBSD, OpenBSD, NetBSD, DragonFly and illumos the same
-  goes for their file flags.  Any
+  goes for their file flags.  ACLs and extended attributes the file system
+  can't hold (`EOPNOTSUPP`/`ENOTSUP`; on illumos an NFSv4 ACL refused with
+  `ENOSYS` too, by tmpfs and UFS) get one warning per file, naming each,
+  and the restore exits 0 as well.  Any
   other failure (`EPERM`, `EDQUOT`, `EIO`, ...; but see S2 for a restore not
   running as root) is an error, and restic
   exits 1, while rustic-bko only warns about it and exits 0 (upstream
