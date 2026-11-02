@@ -36,6 +36,21 @@ func xattrKept(name string) bool {
 		!strings.HasPrefix(name, bcachefsEffective) && name != bcachefsOwnProject
 }
 
+// selinuxLabel is the extended attribute that holds a file's SELinux label.
+const selinuxLabel = "security.selinux"
+
+// xattrNeverRemoved tells whether a restore leaves the extended attribute
+// name alone on a file whose node hasn't got it, rather than removing it.
+// BackOtter: the SELinux label, which the system gives every new file and
+// SELinux never lets anyone remove (EACCES, even as root): a node without
+// one (from a system without SELinux, a btrfs subvolume's root, a
+// directory above the backed-up path in an old rustic-bko snapshot) keeps
+// the label the restore's file got, as in rustic-bko.  A node with one sets
+// it.
+func xattrNeverRemoved(name string) bool {
+	return name == selinuxLabel
+}
+
 func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilter func(xattrName string) bool) error {
 	// BackOtter: an attribute that can't be set (a trusted.* one when not
 	// running as root) doesn't keep the others from being set or removed;
@@ -72,7 +87,8 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 			continue
 		}
 		// Only attempt to remove xattrs that match the filter
-		if xattrSelectFilter(name) && xattrKept(name) {
+		// BackOtter: nor the SELinux label (xattrNeverRemoved).
+		if xattrSelectFilter(name) && xattrKept(name) && !xattrNeverRemoved(name) {
 			if err := removexattr(path, name); err != nil {
 				errs = append(errs, err)
 			}

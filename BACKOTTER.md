@@ -314,6 +314,36 @@ new restic release rather than merged.
   OpenBSD, `mknod c 0 0`) has no `device` field (Go's `omitempty`), as in
   stock restic; rustic-bko leaves it out too (stock rustic wrote
   `"device":0`).  A node without one is device 0 to either tool.
+- Likewise a regular file whose mode is 0 (permissions `0000`, such as
+  `/etc/shadow` on Red Hat's and SUSE's systems) has no `mode` field, as in
+  stock restic; rustic-bko leaves it out too (stock rustic wrote
+  `"mode":0`), and either tool restores a regular file without one with
+  permissions `0000`.
+- A restore never removes a file's SELinux label (`security.selinux`)
+  where its node has none: the system gives every new file one, and SELinux
+  lets nobody remove it (`EACCES`, root too), so stock restic failed (exit
+  1) on every file of a snapshot from a system without SELinux, on the
+  root of a btrfs subvolume (which has none) and on the directories above
+  the backed-up path of a stock rustic snapshot, restored onto Rocky or
+  openSUSE.  The file keeps the label the restore gave it.  A node with a
+  label sets it, as before.  The same in rustic-bko.
+- Restores over existing files clear immutable and append-only first
+  (`fs.ClearRestrictingFlags`), through `FS_IOC_FSSETXATTR`, then
+  through `FS_IOC_SETFLAGS` where that left either set: on Ubuntu 24.04's
+  OpenZFS (2.2) `FS_IOC_FSSETXATTR` cleared immutable but left append-only,
+  as if it read `fsx_xflags` as `FS_IOC_GETFLAGS`'s flags (where
+  `FS_XFLAG_APPEND` is immutable), and a restore over an append-only file
+  on ZFS failed (exit 1); OpenZFS 2.3.9 clears both.  The same in
+  rustic-bko.
+- illumos doors (`S_IFDOOR`: `/etc/sysevent`, `/var/run`, `/etc/svc/volatile`)
+  are skipped at backup, quietly, as sockets are: a door is a running
+  program's door server, made again when it starts, and a restored one
+  would have nobody behind it.  Stock restic failed on each (`unsupported
+  file type "irregular"`, exit 3).  rustic-bko skips them too.
+- On illumos tmpfs, which has a `SUNWattr_rw` view but refuses a `crtime`
+  in it (`EINVAL`), a restore sets no birth time and says nothing, as on
+  UFS, which has no view (debug log only); it had been an error per file
+  and directory (exit 1).  The same in rustic-bko.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 

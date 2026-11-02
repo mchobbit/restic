@@ -47,26 +47,57 @@ func clearRestrictingFlags(path string) error {
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
-	current, err := unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS)
+	return clearRestrictingWith(path, restrictingFlagOps{
+		get: func() (uint32, error) { return unix.IoctlGetUint32(fd, unix.FS_IOC_GETFLAGS) },
+		set: func(f uint32) error { return unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, int(f)) },
+		clearXflags: func(xflags uint32) error {
+			var fsx fsxattr
+			if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &fsx); err != nil {
+				return err
+			}
+			fsx.xflags &^= xflags
+			return ioctlFsxattr(fd, fsIOCFSSetXattr, &fsx)
+		},
+	})
+}
+
+// restrictingFlagOps are the calls clearRestrictingWith makes on a file.
+type restrictingFlagOps struct {
+	get         func() (uint32, error) // FS_IOC_GETFLAGS
+	set         func(uint32) error     // FS_IOC_SETFLAGS
+	clearXflags func(uint32) error     // FS_IOC_FSGETXATTR, then FS_IOC_FSSETXATTR without these fsx_xflags
+}
+
+// clearRestrictingWith clears immutable and append-only of the file at
+// path, through ops: by its fsx_xflags, then by its flags where the file
+// system has no FS_IOC_FSSETXATTR, or where that left either set.  On
+// Ubuntu 24.04's OpenZFS (2.2) FS_IOC_FSSETXATTR cleared immutable alone
+// and left append-only, as if it took fsx_xflags for FS_IOC_GETFLAGS's
+// flags, in which FS_XFLAG_APPEND is FS_IMMUTABLE_FL; a restore over an
+// append-only file failed there (ubuntu24, round 15).  OpenZFS 2.3.9 clears
+// both.  As in rustic-bko.
+func clearRestrictingWith(path string, ops restrictingFlagOps) error {
+	current, err := ops.get()
 	if err != nil {
 		return &os.PathError{Op: "FS_IOC_GETFLAGS", Path: path, Err: err}
 	}
 	if current&fsImmutableAppend == 0 {
 		return nil
 	}
-	var fsx fsxattr
-	err = ioctlFsxattr(fd, fsIOCFSGetXattr, &fsx)
-	if err == nil {
-		fsx.xflags &^= fsXflagImmutable | fsXflagAppend
-		err = ioctlFsxattr(fd, fsIOCFSSetXattr, &fsx)
-	}
-	if err == nil {
-		return nil
-	}
-	if !unsupportedErr(err) {
+	err = ops.clearXflags(fsXflagImmutable | fsXflagAppend)
+	switch {
+	case err == nil:
+		current, err = ops.get()
+		if err != nil {
+			return &os.PathError{Op: "FS_IOC_GETFLAGS", Path: path, Err: err}
+		}
+		if current&fsImmutableAppend == 0 {
+			return nil
+		}
+	case !unsupportedErr(err):
 		return &os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err}
 	}
-	if err := unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, int(current&^fsImmutableAppend)); err != nil {
+	if err := ops.set(current &^ fsImmutableAppend); err != nil {
 		return &os.PathError{Op: "FS_IOC_SETFLAGS", Path: path, Err: err}
 	}
 	return nil

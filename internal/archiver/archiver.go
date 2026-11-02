@@ -635,6 +635,11 @@ func (arch *Archiver) save(ctx context.Context, snPath, target string, previous 
 		debug.Log("  %v is a socket, ignoring", target)
 		return futureNode{}, true, nil
 
+	case fs.IsDoor(fi):
+		// BackOtter: as a socket (fs.IsDoor).
+		debug.Log("  %v is a door, ignoring", target)
+		return futureNode{}, true, nil
+
 	default:
 		debug.Log("  %v other", target)
 
