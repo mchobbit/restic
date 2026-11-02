@@ -296,12 +296,24 @@ new restic release rather than merged.
   sets.
 - A node without an mtime gets no times at restore: the file keeps the
   times the restore gave it.  A node without an atime gets its mtime as
-  its atime.  rustic-bko writes such nodes for the directories above the
-  backed-up path (`/home` in a backup of `/home/m`; its BACKOTTER.md), and
-  restores them this way; stock restic set the zero time, whose Unix time
-  in nanoseconds Go leaves undefined, which DragonFly refuses (`EINVAL`,
-  so a whole-snapshot restore exited 1) and other systems set as some
-  date centuries ago.  The birth time, if the node has one, is still set.
+  its atime.  Stock rustic wrote such nodes for the directories above the
+  backed-up path (`/home` in a backup of `/home/m`), and rustic-bko still
+  writes them where a directory above the snapshot's path isn't one on
+  disk (`--as-path`, stdin; its BACKOTTER.md); stock restic set the zero
+  time, whose Unix time in nanoseconds Go leaves undefined, which
+  DragonFly refuses (`EINVAL`, so a whole-snapshot restore exited 1) and
+  other systems set as some date centuries ago.  The birth time, if the
+  node has one, is still set.
+- The directories above the backed-up path are stored with their own
+  metadata (their `lstat`), as stock restic stores them, and rustic-bko
+  stores them the same way (stock rustic made nodes of its own: mode
+  `0755`, no owner or times), so that the two tools' snapshots are the
+  same and a whole-snapshot restore gives those directories their own
+  mode, owner and times in either tool.
+- A device node whose device number is 0 (`/dev/console` on NetBSD and
+  OpenBSD, `mknod c 0 0`) has no `device` field (Go's `omitempty`), as in
+  stock restic; rustic-bko leaves it out too (stock rustic wrote
+  `"device":0`).  A node without one is device 0 to either tool.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 
