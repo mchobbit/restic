@@ -216,8 +216,8 @@ new restic release rather than merged.
   on by default here (beta; `RESTIC_FEATURES=device-id-for-hardlinks=false`
   turns it off), with `Links < 2` for `Links == 1`, so that a FIFO has none
   either.  It is rustic-bko's default rule (`--set-devid hardlink`), so the
-  two tools' snapshots of one tree have the same nodes, and the same tree
-  IDs in one repository.  Stock restic stores the device ID on every node:
+  two tools' snapshots of one tree have the same nodes (not the same tree
+  IDs: below).  Stock restic stores the device ID on every node:
   it changes when the same files are seen through another device (a btrfs
   subvolume or snapshot, an LVM snapshot, the disk a rescue restored to),
   which changes every node, and so every tree, of the next backup.  Restores
@@ -348,6 +348,19 @@ new restic release rather than merged.
   same instants with `+00:00`.  Both tools read either form (any offset),
   so the two differ only in a snapshot's bytes, never in what a restore
   sets.
+- Accepted difference (both tools): the two tools' snapshots of one tree
+  have the same nodes but not the same trees' bytes, so not the same tree
+  IDs, even in one repository.  restic writes a symlink's `linktarget` and
+  `linktarget_raw`, and a device's `device`, after `links`, in its `Node`
+  struct's order; rustic writes them right after `type` (serde's `flatten`
+  of its node type).  And restic escapes `<`, `>` and `&` in names and
+  other strings (`\u003c`, Go's `json.Marshal`), which rustic doesn't.  So
+  a directory holding a symlink, a device or such a name gets a different
+  tree in each tool, and so does every directory above it, the root
+  included.  The files' data blobs, and the trees that hold none of these,
+  are shared between the tools.  Either tool restores the other's
+  snapshots; BackOtter's checks compare the two tools' snapshots node by
+  node, never by tree ID.
 - A node without an mtime gets no times at restore: the file keeps the
   times the restore gave it.  A node without an atime gets its mtime as
   its atime.  Stock rustic wrote such nodes for the directories above the
