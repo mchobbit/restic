@@ -209,6 +209,21 @@ new restic release rather than merged.
   OpenBSD, NetBSD and DragonFly its permissions (`fchmodat(2)` with
   `AT_SYMLINK_NOFOLLOW`; a file system that refuses that is left alone);
   stock restic gives it the time of the restore and 0755.
+- A node has a device ID (`device_id`) only where a restore needs one, to
+  make hard links: a file, symlink or device with more than one link; not a
+  directory, a file with one link, or a FIFO or socket, whose link count
+  isn't stored.  That is restic's `device-id-for-hardlinks` feature, turned
+  on by default here (beta; `RESTIC_FEATURES=device-id-for-hardlinks=false`
+  turns it off), with `Links < 2` for `Links == 1`, so that a FIFO has none
+  either.  It is rustic-bko's default rule (`--set-devid hardlink`), so the
+  two tools' snapshots of one tree have the same nodes, and the same tree
+  IDs in one repository.  Stock restic stores the device ID on every node:
+  it changes when the same files are seen through another device (a btrfs
+  subvolume or snapshot, an LVM snapshot, the disk a rescue restored to),
+  which changes every node, and so every tree, of the next backup.  Restores
+  use it as before, only for nodes with more than one link, so older
+  snapshots, with a device ID on every node, restore as they did; the first
+  backup after the change stores each directory's tree once more.
 - On illumos, extended attributes (named attribute files, `runat(1)`) are
   backed up and restored, through `openat(2)` with `O_XATTR`: stock restic's
   calls for them fail there with ENOTSUP, which it ignores.  The system

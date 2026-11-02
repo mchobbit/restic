@@ -285,7 +285,10 @@ func (arch *Archiver) nodeFromFileInfo(snPath, filename string, meta ToNoder, ig
 		node.AccessTime = node.ModTime
 	}
 	if feature.Flag.Enabled(feature.DeviceIDForHardlinks) {
-		if node.Links == 1 || node.Type == data.NodeTypeDir {
+		// BackOtter: nor for a node without a link count (a FIFO, a
+		// socket), whose links aren't stored and that is never restored
+		// as a hard link, as in rustic-bko: Links < 2, not Links == 1.
+		if node.Links < 2 || node.Type == data.NodeTypeDir {
 			// the DeviceID is only necessary for hardlinked files
 			// when using subvolumes or snapshots their deviceIDs tend to change which causes
 			// restic to upload new tree blobs

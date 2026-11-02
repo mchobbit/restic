@@ -9,6 +9,7 @@ import (
 	"github.com/restic/restic/internal/feature"
 	"github.com/restic/restic/internal/fs"
 	rtest "github.com/restic/restic/internal/test"
+	"golang.org/x/sys/unix"
 )
 
 func statAndSnapshot(t *testing.T, repo archiverRepo, name string) (*data.Node, *data.Node) {
@@ -48,4 +49,17 @@ func TestHardlinkMetadata(t *testing.T) {
 
 	_, node = statAndSnapshot(t, repo, "testdir")
 	rtest.Assert(t, node.DeviceID == 0, "device id mismatch for testdir expected %v got %v", 0, node.DeviceID)
+
+	// BackOtter: nor for a FIFO, whose link count isn't stored, as in
+	// rustic-bko.
+	rtest.OK(t, unix.Mkfifo("testfifo", 0o600))
+	_, node = statAndSnapshot(t, repo, "testfifo")
+	rtest.Equals(t, data.NodeTypeFifo, node.Type)
+	rtest.Assert(t, node.DeviceID == 0, "device id mismatch for testfifo expected %v got %v", 0, node.DeviceID)
+}
+
+// BackOtter: the device ID only for hard links is on by default, as in
+// rustic-bko.
+func TestDeviceIDForHardlinksByDefault(t *testing.T) {
+	rtest.Assert(t, feature.Flag.Enabled(feature.DeviceIDForHardlinks), "device-id-for-hardlinks is off by default")
 }
