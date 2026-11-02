@@ -338,15 +338,39 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	}
 	flags, hasFlags := res.nodeFileFlags(node, location)
 	dosFlags, hasDosFlags := res.nodeZFSDosFlags(node, location)
-	if (hasFlags || hasDosFlags) && !res.flagsQueued(node) {
+	fatAttrs, hasFatAttrs := res.nodeFATAttributes(node, location)
+	xfsOpts, hasXfsOpts := res.nodeXFSOptions(node, location)
+	if (hasFlags || hasDosFlags || hasFatAttrs || hasXfsOpts) && !res.flagsQueued(node) {
 		res.fileFlags = append(res.fileFlags, fileFlags{
 			target: target, location: location, typ: node.Type,
 			flags: flags, hasFlags: hasFlags,
 			dosFlags: dosFlags, hasDosFlags: hasDosFlags,
+			fatAttrs: fatAttrs, hasFatAttrs: hasFatAttrs,
+			xfsOpts: xfsOpts, hasXfsOpts: hasXfsOpts,
 			compression: res.btrfsCompression(node),
 		})
 	}
 	return err
+}
+
+// nodeFATAttributes returns the FAT attributes node holds for this OS, and
+// whether it holds them, warning once about malformed ones (which are none).
+func (res *Restorer) nodeFATAttributes(node *data.Node, location string) (uint32, bool) {
+	attrs, ok, err := fs.NodeFATAttributes(node)
+	if err != nil {
+		res.warnAbout(location, err)
+	}
+	return attrs, ok
+}
+
+// nodeXFSOptions returns the XFS options node holds for this OS, and whether
+// it holds them, warning once about malformed ones (which are none).
+func (res *Restorer) nodeXFSOptions(node *data.Node, location string) (data.XFSOptions, bool) {
+	opts, ok, err := fs.NodeXFSOptions(node)
+	if err != nil {
+		res.warnAbout(location, err)
+	}
+	return opts, ok
 }
 
 // nodeFileFlags returns the file flags node holds for this OS, and whether
@@ -530,6 +554,10 @@ type fileFlags struct {
 	hasFlags         bool
 	dosFlags         uint64
 	hasDosFlags      bool
+	fatAttrs         uint32 // linux.fat_attrs
+	hasFatAttrs      bool
+	xfsOpts          data.XFSOptions // linux.xfs_options
+	hasXfsOpts       bool
 	compression      []byte // btrfs.compression, to set again after the flags
 }
 
@@ -539,8 +567,27 @@ type fileFlags struct {
 // its contents.  ZFS DOS flags go on just before: a readonly file refuses
 // writes, a nounlink one renames, any write sets archive again, and setting
 // them needs no privilege while immutable and append-only don't change.
+// FAT attributes and XFS options go there too, for the same reasons: a
+// write sets FAT's archive again, and both are set through the file itself,
+// which an immutable file refuses.
 func (res *Restorer) restoreFileFlags() error {
 	for _, f := range res.fileFlags {
+		if f.hasFatAttrs {
+			debug.Log("restoreFATAttributes %v %#x", f.target, f.fatAttrs)
+			if err := fs.RestoreFATAttributes(f.target, f.typ, f.fatAttrs); err != nil {
+				if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {
+					return err
+				}
+			}
+		}
+		if f.hasXfsOpts {
+			debug.Log("restoreXFSOptions %v %+v", f.target, f.xfsOpts)
+			if err := fs.RestoreXFSOptions(f.target, f.typ, f.xfsOpts); err != nil {
+				if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {
+					return err
+				}
+			}
+		}
 		if f.hasDosFlags {
 			debug.Log("restoreZFSDosFlags %v %#x", f.target, f.dosFlags)
 			if err := fs.RestoreZFSDosFlags(f.target, f.typ, f.dosFlags); err != nil {
@@ -798,6 +845,10 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 									return err
 								}
 							}
+						}
+						// So do XFS's extent size hints.
+						if opts, ok := res.nodeXFSOptions(node, location); ok {
+							fs.PrepareFileForXFSOptions(target, opts)
 						}
 						filerestorer.addFile(location, node.Content, int64(node.Size), matches, sparse, fresh)
 					} else {

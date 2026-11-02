@@ -210,3 +210,68 @@ func TestNodeUnread(t *testing.T) {
 	rtest.Assert(t, !ok && errors.As(err, &malformed) && malformed.Attr == TypeIllumosUnreadSize,
 		"illumos.unread_size \"5\": want a MalformedAttributeError, got %v", err)
 }
+
+func TestNodeFATAttributes(t *testing.T) {
+	var node Node
+	_, ok, err := node.FATAttributes()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "FAT attributes without the attribute")
+
+	// 0 is stored, and read back as a value: archive cleared.
+	node.SetFATAttributes(0)
+	buf, err := json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.fat_attrs":0}`, string(buf))
+	var back Node
+	rtest.OK(t, json.Unmarshal(buf, &back.GenericAttributes))
+	attrs, ok, err := back.FATAttributes()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok, "FAT attributes 0 lost in JSON")
+	rtest.Equals(t, uint32(0), attrs)
+
+	node.SetFATAttributes(0x26)
+	buf, err = json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.fat_attrs":38}`, string(buf))
+
+	for _, raw := range []string{`-1`, `1.5`, `"x"`, `4294967296`} {
+		back.GenericAttributes[TypeLinuxFATAttributes] = json.RawMessage(raw)
+		_, ok, err = back.FATAttributes()
+		rtest.Assert(t, !ok, "malformed FAT attributes %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxFATAttributes,
+			"FAT attributes %s: want a MalformedAttributeError, got %v", raw, err)
+	}
+}
+
+func TestNodeXFSOptions(t *testing.T) {
+	var node Node
+	_, ok, err := node.XFSOptions()
+	rtest.OK(t, err)
+	rtest.Assert(t, !ok, "XFS options without the attribute")
+
+	// The sizes go when 0; the keys are in byte order, as rustic-bko's.
+	node.SetXFSOptions(XFSOptions{XFlags: 0x2000})
+	buf, err := json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.xfs_options":{"xflags":8192}}`, string(buf))
+	node.SetXFSOptions(XFSOptions{XFlags: 0x10800, ExtSize: 1 << 20, CowExtSize: 1 << 21})
+	buf, err = json.Marshal(node.GenericAttributes)
+	rtest.OK(t, err)
+	rtest.Equals(t, `{"linux.xfs_options":{"cowextsize":2097152,"extsize":1048576,"xflags":67584}}`, string(buf))
+	var back Node
+	rtest.OK(t, json.Unmarshal(buf, &back.GenericAttributes))
+	opts, ok, err := back.XFSOptions()
+	rtest.OK(t, err)
+	rtest.Assert(t, ok, "XFS options lost in JSON")
+	rtest.Equals(t, XFSOptions{XFlags: 0x10800, ExtSize: 1 << 20, CowExtSize: 1 << 21}, opts)
+
+	for _, raw := range []string{`8192`, `{"xflags":-1}`, `{"extsize":"x"}`} {
+		back.GenericAttributes[TypeLinuxXFSOptions] = json.RawMessage(raw)
+		_, ok, err = back.XFSOptions()
+		rtest.Assert(t, !ok, "malformed XFS options %s taken", raw)
+		var malformed *MalformedAttributeError
+		rtest.Assert(t, errors.As(err, &malformed) && malformed.Attr == TypeLinuxXFSOptions,
+			"XFS options %s: want a MalformedAttributeError, got %v", raw, err)
+	}
+}

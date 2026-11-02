@@ -88,6 +88,54 @@ func RestoreZFSDosFlags(path string, typ data.NodeType, flags uint64) error {
 	return restoreZFSDosFlags(path, typ, flags)
 }
 
+// NodeFATAttributes returns the FAT attributes node holds, and whether it
+// holds them: on Linux, linux.fat_attrs; elsewhere none.  Malformed ones
+// are none, with a data.MalformedAttributeError for the restorer to warn
+// about.
+func NodeFATAttributes(node *data.Node) (uint32, bool, error) {
+	if fatAttributesAttribute == "" {
+		return 0, false, nil
+	}
+	return node.FATAttributes()
+}
+
+// RestoreFATAttributes sets the FAT attributes (read-only, hidden, system,
+// archive) of the file at path, which has type typ, to attrs.  The restorer
+// calls it in its last pass, before RestoreFileFlags: any write sets archive
+// again.  A file system that isn't FAT gives an *UnsupportedError, as do
+// attributes it refuses as unsupported.
+func RestoreFATAttributes(path string, typ data.NodeType, attrs uint32) error {
+	return restoreFATAttributes(path, typ, attrs)
+}
+
+// NodeXFSOptions returns the XFS options node holds, and whether it holds
+// them: on Linux, linux.xfs_options; elsewhere none.  Malformed ones are
+// none, with a data.MalformedAttributeError for the restorer to warn about.
+func NodeXFSOptions(node *data.Node) (data.XFSOptions, bool, error) {
+	if xfsOptionsAttribute == "" {
+		return data.XFSOptions{}, false, nil
+	}
+	return node.XFSOptions()
+}
+
+// PrepareFileForXFSOptions gives the regular file at path, which the
+// restorer is about to write, the XFS options opts while it is still empty
+// (XFS takes an extent size hint on no file with data), creating it empty
+// when there is none.  Only on XFS; errors are left for RestoreXFSOptions,
+// in the last pass, to report.
+func PrepareFileForXFSOptions(path string, opts data.XFSOptions) {
+	prepareFileForXFSOptions(path, opts)
+}
+
+// RestoreXFSOptions sets the XFS options of the file at path, which has type
+// typ, to opts, leaving its other flags and project ID as they are.  The
+// restorer calls it in its last pass, before RestoreFileFlags.  A file
+// system that isn't XFS gives an *UnsupportedError, as do options it
+// refuses (EINVAL: a new extent size hint on a file that has data).
+func RestoreXFSOptions(path string, typ data.NodeType, opts data.XFSOptions) error {
+	return restoreXFSOptions(path, typ, opts)
+}
+
 // setFlagsBestEffort calls set with want.  If that fails, it sets as many of
 // want's bits as set accepts, one at a time, and returns an error naming the
 // bits it refused.  When every refusal says the file system doesn't support

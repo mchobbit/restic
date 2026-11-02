@@ -117,6 +117,29 @@ new restic release rather than merged.
     aren't archive alone, which ZFS gives every file it creates or writes
     to; archive cleared is kept, as 0.  FreeBSD (`freebsd.file_flags`) and
     illumos (`illumos.system_attributes`) hold the same flags already.
+  - `linux.fat_attrs`: the attributes of a file on FAT (vfat, msdos:
+    statfs's `f_type` `0x4d44`; `FAT_IOCTL_GET_ATTRIBUTES`, `0x80047210`),
+    as a number: read-only (`0x01`), hidden (`0x02`), system (`0x04`) and
+    archive (`0x20`); volume label and directory can't be set.  Regular
+    files and directories, only when they aren't what Linux gives a new one
+    and the restore would give it anyway: archive alone for a regular file,
+    read-only or not (its mode's write bits say that), none for a
+    directory (whose read-only the mode doesn't show).  Archive cleared is
+    kept, as 0.  FreeBSD keeps FAT's attributes in `freebsd.file_flags`
+    (msdosfs maps them to `uarch`, `uhidden`, `usystem`, `urdonly`).
+  - `linux.xfs_options`: a file's options on XFS (statfs's `f_type`
+    `0x58465342`; `FS_IOC_FSGETXATTR`) that `linux.inode_flags` and
+    `linux.project_id` don't carry, as
+    `{"cowextsize":2097152,"extsize":1048576,"xflags":67584}`: of
+    `fsx_xflags`, nosymlinks (`n`, `0x400`), the extent size hint (`e`,
+    `0x800`), its inheritance (`E`, `0x1000`), nodefrag (`f`, `0x2000`),
+    filestream (`S`, `0x4000`) and the copy-on-write extent size hint (`C`,
+    `0x10000`), with the hints' sizes in bytes, each left out when 0 (XFS
+    gives a size only with its flag).  Regular files and directories that
+    have any of them.  Not realtime and its inheritance, which need a
+    realtime device, nor DAX; nor preallocated (`p`), which a dense restore
+    gives every file it preallocates (S5), and a sparse one none: an
+    accepted difference, in both tools, as the blocks themselves are.
   - `unix.sparse`: `true` on a regular file that had holes.
   - `unix.birthtime`: a file's birth (creation) time, on FreeBSD and NetBSD
     (`st_birthtim`, every type of file) and illumos (ZFS's `crtime`,
@@ -141,7 +164,23 @@ new restic release rather than merged.
   whole mask, so restic reads the file's flags and changes only the kept
   ones, leaving immutable, append-only and nodump to the inode flags; an
   owner may set every kept one.  Restored onto another file system than
-  ZFS, they get one warning per restore, with the number of files.
+  ZFS, they get one warning per restore, with the number of files.  FAT
+  attributes (`linux.fat_attrs`) go on there too, for the same reason (a
+  write sets archive), with `FAT_IOCTL_SET_ATTRIBUTES`, which also sets the
+  mode's write bits from read-only, as a `chmod(2)` would: restic reads the
+  file's attributes and changes the kept ones only where they differ.  A
+  FAT file system's root directory takes none (`EINVAL`).  Restored onto
+  another file system than FAT, they get one warning per restore ("not
+  FAT"), with the number of files.  So do XFS options (`linux.xfs_options`):
+  a directory's go on in that last pass, so the entries the restore makes
+  in it inherit nothing (each has its own node); a regular file's go on
+  also as soon as the restore creates it, while it is empty, since XFS
+  takes an extent size hint on no file with data (`EINVAL`), and again in
+  the last pass, which leaves options that are right alone.  A file the
+  restore writes over (one that was there, with data) can't get a new
+  extent size hint: that is a warning (S10).  Restored onto another file
+  system than XFS, they get one warning per restore ("not XFS"), with the
+  number of files.
   btrfs's no-copy-on-write flag goes on while a new file is still empty:
   btrfs ignores it on one with data.  Where the target file system doesn't support a flag, the
   others are still set and restic warns about that one (S10 below).  Where
@@ -518,16 +557,18 @@ own addition, made after that plan with the sparse-file work (batch 3).
   can't be opened for `FS_IOC_FSGETXATTR` without following them or side
   effects (Linux 6.17's `file_getattr(2)` could, but is too new to rely on).
 - **S9 Malformed values.**  A value of `linux.inode_flags`,
-  `linux.project_id`, `linux.zfs_dos_flags`, `unix.sparse`,
+  `linux.project_id`, `linux.zfs_dos_flags`, `linux.fat_attrs`,
+  `linux.xfs_options`, `unix.sparse`,
   `unix.birthtime` or a `*.file_flags` attribute that can't be decoded gets
   one warning per attribute per restore, and is ignored.  It is not an
   error.  (restic does the same for `illumos.owner_sid`,
   `illumos.group_sid`, `illumos.xattr_meta`, `illumos.zfs_project`,
   `freebsd.zfs_project` and `illumos.unread_size`.)
 - **S10 Unsupported versus failed.**  When the target file system refuses an
-  inode flag, file flag, ZFS DOS flag, F or project ID with `ENOTTY`,
-  `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks them), or isn't ZFS for ZFS
-  DOS flags, restic warns once per attribute and refused bits, naming the
+  inode flag, file flag, ZFS DOS flag, FAT attribute, XFS option, F or
+  project ID with `ENOTTY`, `EOPNOTSUPP`/`ENOTSUP` or `EINVAL` (it lacks
+  them), or isn't ZFS for ZFS DOS flags, FAT for FAT attributes or XFS for
+  XFS options, restic warns once per attribute and refused bits, naming the
   first file, and gives the number of files at the end; the restore still
   exits 0.  On FreeBSD, OpenBSD, NetBSD, DragonFly and illumos the same
   goes for their file flags.  ACLs and extended attributes the file system

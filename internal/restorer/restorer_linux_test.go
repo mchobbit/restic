@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -387,4 +388,148 @@ func TestRestorerOverRestrictingFlags(t *testing.T) {
 		rtest.Equals(t, want.data, string(got))
 		rtest.Equals(t, want.flags, flagsOf(path)&0x30)
 	}
+}
+
+// FAT attributes and XFS options restored onto another file system are a
+// warning once each, with the number of files at the end, and the rest of
+// the files' metadata is restored.
+func TestRestorerFATXFSNotThere(t *testing.T) {
+	dst := rtest.TempDir(t)
+	var st unix.Statfs_t
+	rtest.OK(t, unix.Statfs(dst, &st))
+	if uint32(st.Type) == 0x4d44 || uint32(st.Type) == 0x58465342 {
+		t.Skip("the temporary directory is on FAT or XFS")
+	}
+	hidden := &FileAttributes{}
+	nodefrag := &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"h1": File{Data: "data", attributes: hidden, Mode: 0o640},
+			"h2": File{Data: "data", attributes: hidden},
+			"n":  Dir{attributes: nodefrag},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		hidden:   {data.TypeLinuxFATAttributes: json.RawMessage(`34`)},
+		nodefrag: {data.TypeLinuxXFSOptions: json.RawMessage(`{"xflags":8192}`)},
+	}))
+
+	res := NewRestorer(repo, sn, Options{})
+	var warnings []string
+	res.Warn = func(msg string) { warnings = append(warnings, msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	joined := strings.Join(warnings, "\n")
+	rtest.Assert(t, strings.Contains(joined, "linux.fat_attrs not supported by the target file system: not FAT"), "want a not FAT warning, got %q", warnings)
+	rtest.Assert(t, strings.Contains(joined, "linux.xfs_options not supported by the target file system: not XFS"), "want a not XFS warning, got %q", warnings)
+	rtest.Assert(t, strings.Contains(joined, "2 files in all"), "want a total of 2 files, got %q", warnings)
+	rtest.Assert(t, len(warnings) == 3, "want 2 warnings and a total, got %q", warnings)
+	fi, err := os.Stat(filepath.Join(dst, "h1"))
+	rtest.OK(t, err)
+	rtest.Equals(t, os.FileMode(0o640), fi.Mode().Perm())
+}
+
+// mountLoopFS makes a file system with mkfs (and args) on an image of size
+// bytes and mounts it, for the test's lifetime, skipping the test without
+// root or the tools.
+func mountLoopFS(t *testing.T, size int64, mkfs string, args ...string) string {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root, to mount a file system")
+	}
+	if _, err := exec.LookPath(mkfs); err != nil {
+		t.Skipf("no %v", mkfs)
+	}
+	tmp := rtest.TempDir(t)
+	img := filepath.Join(tmp, "fs.img")
+	mnt := filepath.Join(tmp, "mnt")
+	rtest.OK(t, os.Mkdir(mnt, 0o755))
+	rtest.OK(t, os.WriteFile(img, nil, 0o600))
+	rtest.OK(t, os.Truncate(img, size))
+	if out, err := exec.Command(mkfs, append(args, img)...).CombinedOutput(); err != nil {
+		t.Skipf("%v: %v: %s", mkfs, err, out)
+	}
+	if out, err := exec.Command("mount", "-o", "loop", img, mnt).CombinedOutput(); err != nil {
+		t.Skipf("mount: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("umount", mnt).Run() })
+	return mnt
+}
+
+// With root, on a loop vfat: FAT attributes come back after the contents
+// (whose write sets archive), on files and directories.
+func TestRestorerFATAttributes(t *testing.T) {
+	mnt := mountLoopFS(t, 64<<20, "mkfs.vfat")
+	hidden, cleared, system, hdir := &FileAttributes{}, &FileAttributes{}, &FileAttributes{}, &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"hidden":  File{Data: "h", attributes: hidden},
+			"cleared": File{Data: "c", attributes: cleared},
+			"system":  File{Data: "s", attributes: system},
+			"plain":   File{Data: "p"},
+			"hdir":    Dir{attributes: hdir, Nodes: map[string]Node{"in": File{Data: "in"}}},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		hidden:  {data.TypeLinuxFATAttributes: json.RawMessage(`34`)},
+		cleared: {data.TypeLinuxFATAttributes: json.RawMessage(`0`)},
+		system:  {data.TypeLinuxFATAttributes: json.RawMessage(`36`)},
+		hdir:    {data.TypeLinuxFATAttributes: json.RawMessage(`2`)},
+	}))
+	dst := filepath.Join(mnt, "dst")
+	res := NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	for name, want := range map[string]uint32{"hidden": 0x22, "cleared": 0, "system": 0x24, "plain": 0x20, "hdir": 0x12, "hdir/in": 0x20} {
+		fd, err := unix.Open(filepath.Join(dst, name), unix.O_RDONLY, 0)
+		rtest.OK(t, err)
+		got, err := unix.IoctlGetUint32(fd, 0x80047210) // FAT_IOCTL_GET_ATTRIBUTES
+		_ = unix.Close(fd)
+		rtest.OK(t, err)
+		rtest.Assert(t, got == want, "%v: FAT attributes %#x, want %#x", name, got, want)
+	}
+}
+
+// With root, on a loop XFS: a file's extent size hint goes on before its
+// contents (XFS takes none on a file with data), a directory's options at
+// the end.
+func TestRestorerXFSOptions(t *testing.T) {
+	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	ext, dir := &FileAttributes{}, &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"ext": File{Data: strings.Repeat("x", 70000), attributes: ext},
+			"dir": Dir{attributes: dir, Nodes: map[string]Node{"in": File{Data: "in"}}},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		ext: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":1048576,"xflags":10240}`)},
+		dir: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":2097152,"xflags":20480}`)},
+	}))
+	dst := filepath.Join(mnt, "dst")
+	res := NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	for name, want := range map[string]string{"ext": "[e-----f-] 1048576", "dir": "[E--S-] 2097152"} {
+		out, err := exec.Command("xfs_io", "-r", "-c", "stat", filepath.Join(dst, name)).CombinedOutput()
+		rtest.OK(t, err)
+		var xflags, extsize string
+		for _, l := range strings.Split(string(out), "\n") {
+			f := strings.Fields(l)
+			if len(f) >= 3 && f[0] == "fsxattr.xflags" {
+				xflags = f[2]
+			}
+			if len(f) >= 3 && f[0] == "fsxattr.extsize" {
+				extsize = f[2]
+			}
+		}
+		x, _ := strconv.ParseUint(strings.TrimPrefix(xflags, "0x"), 16, 32)
+		kept := x & 0x17c00
+		wantX := map[string]uint64{"ext": 0x2800, "dir": 0x5000}[name]
+		rtest.Assert(t, kept == wantX && extsize == strings.Fields(want)[1], "%v: xflags %v extsize %v, want %v", name, xflags, extsize, want)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "ext"))
+	rtest.OK(t, err)
+	rtest.Equals(t, 70000, len(got))
 }

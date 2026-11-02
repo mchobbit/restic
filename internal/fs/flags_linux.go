@@ -42,7 +42,8 @@ const linuxInodeFlags = 0x00000001 | // FS_SECRM_FL        s
 const keptLate = linuxInodeFlags &^ dirFlagsBeforeEntries
 
 // nodeFillFileFlags records the inode flags of a regular file or directory,
-// its project ID (attrs_linux.go), its ZFS DOS flags (dosflags_linux.go) and
+// its project ID (attrs_linux.go), its ZFS DOS flags (dosflags_linux.go),
+// FAT attributes and XFS options (fatxfs_linux.go) and
 // whether a regular file has holes (nodeFillSparse elsewhere), all through
 // one descriptor.  A file that can't be opened has none of them.
 func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error {
@@ -59,6 +60,8 @@ func nodeFillFileFlags(node *data.Node, path string, fi *ExtendedFileInfo) error
 	defer func() { _ = unix.Close(fd) }()
 	nodeFillProjectID(node, path, fd, fi.DeviceID)
 	nodeFillZFSDosFlags(node, path, fd, fi.DeviceID)
+	nodeFillFATAttributes(node, path, fd, fi.DeviceID)
+	nodeFillXFSOptions(node, path, fd, fi.DeviceID)
 	if node.Type == data.NodeTypeFile {
 		hole := func() (int64, error) {
 			if genericSeekHole(fd, fi.DeviceID) {

@@ -7,8 +7,8 @@ import (
 )
 
 // MalformedAttributeError is a BackOtter attribute (file flags,
-// linux.project_id, linux.zfs_dos_flags, unix.sparse, unix.birthtime,
-// illumos.unread_size) whose value can't be decoded.  The restorer warns
+// linux.project_id, linux.zfs_dos_flags, linux.fat_attrs,
+// linux.xfs_options, unix.sparse, unix.birthtime, illumos.unread_size) whose value can't be decoded.  The restorer warns
 // about it once per attribute and skips it: a snapshot that another build
 // wrote oddly still restores, with everything else in it.
 type MalformedAttributeError struct {
@@ -83,6 +83,56 @@ func (node *Node) ZFSDosFlags() (flags uint64, ok bool, err error) {
 func (node *Node) SetZFSDosFlags(flags uint64) {
 	if err := node.SetGenericAttribute(TypeLinuxZFSDosFlags, flags); err != nil {
 		panic(err) // a uint64 always marshals
+	}
+}
+
+// FATAttributes returns node's FAT attributes (TypeLinuxFATAttributes), and
+// whether it has them.  As ZFS DOS flags, 0 is a value to restore: a file
+// whose archive attribute was cleared.
+func (node *Node) FATAttributes() (attrs uint32, ok bool, err error) {
+	ok, err = node.GenericAttribute(TypeLinuxFATAttributes, &attrs)
+	if err != nil {
+		return 0, false, &MalformedAttributeError{Attr: TypeLinuxFATAttributes, Err: err}
+	}
+	return attrs, ok, nil
+}
+
+// SetFATAttributes stores FAT attributes, 0 included.  Which files get them
+// is up to the caller: those whose attributes aren't what a new file or
+// directory gets.
+func (node *Node) SetFATAttributes(attrs uint32) {
+	if err := node.SetGenericAttribute(TypeLinuxFATAttributes, attrs); err != nil {
+		panic(err) // a uint32 always marshals
+	}
+}
+
+// XFSOptions are a file's options on XFS that linux.inode_flags and
+// linux.project_id don't carry (TypeLinuxXFSOptions): fsx_xflags'
+// extent size hint, its inheritance, nodefrag, filestream, nosymlinks and
+// the copy-on-write extent size hint, and the two hints' sizes in bytes,
+// left out when 0.  The fields are in the order of their JSON names, as
+// rustic-bko writes them.
+type XFSOptions struct {
+	CowExtSize uint32 `json:"cowextsize,omitempty"`
+	ExtSize    uint32 `json:"extsize,omitempty"`
+	XFlags     uint32 `json:"xflags"`
+}
+
+// XFSOptions returns node's XFS options (TypeLinuxXFSOptions), and whether
+// it has them.
+func (node *Node) XFSOptions() (opts XFSOptions, ok bool, err error) {
+	ok, err = node.GenericAttribute(TypeLinuxXFSOptions, &opts)
+	if err != nil {
+		return XFSOptions{}, false, &MalformedAttributeError{Attr: TypeLinuxXFSOptions, Err: err}
+	}
+	return opts, ok, nil
+}
+
+// SetXFSOptions stores XFS options.  Which files get them is up to the
+// caller: those with any.
+func (node *Node) SetXFSOptions(opts XFSOptions) {
+	if err := node.SetGenericAttribute(TypeLinuxXFSOptions, opts); err != nil {
+		panic(err) // numbers always marshal
 	}
 }
 
