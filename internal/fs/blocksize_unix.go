@@ -11,7 +11,7 @@ import (
 // HoleBlockSize returns the size of the blocks to leave as holes in f, a
 // file being restored sparse (BackOtter): its file system's block size
 // (statfs(2)'s or statvfs(2)'s f_bsize), else f's st_blksize, at least
-// 4096; 4096 if neither is known.
+// 512; 4096 if neither is known (holeBlockSize).
 func HoleBlockSize(f *os.File) int64 {
 	var bs int64
 	rc, err := f.SyscallConn()
@@ -26,5 +26,5 @@ func HoleBlockSize(f *os.File) int64 {
 			}
 		})
 	}
-	return max(bs, minHoleBlockSize)
+	return holeBlockSize(bs)
 }

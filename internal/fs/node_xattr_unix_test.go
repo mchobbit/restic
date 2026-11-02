@@ -5,6 +5,9 @@ package fs
 import (
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/restic/restic/internal/data"
@@ -78,4 +81,81 @@ func TestFillExtendedAttributesLargeValue(t *testing.T) {
 	rtest.OK(t, nodeFillExtendedAttributes(node, file, false, t.Logf))
 	rtest.Equals(t, 1, len(node.ExtendedAttributes))
 	rtest.Equals(t, huge, node.ExtendedAttributes[0].Value)
+}
+
+// BackOtter: an extended attribute the file has already, with its node's
+// value, isn't set again (bcachefs refuses to set bcachefs.casefold again on
+// a directory with entries, even to the value it has); the others are set,
+// and those the node hasn't got removed.
+func TestRestoreLeavesEqualXattrs(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	rtest.OK(t, os.WriteFile(file, []byte("hello world"), 0o600))
+	for name, value := range map[string]string{"user.same": "v", "user.diff": "old", "user.gone": "g", "user.empty": ""} {
+		err := setxattr(file, name, []byte(value))
+		if xattrUnsupported(err) {
+			t.Skipf("file system without extended attributes: %v", err)
+		}
+		rtest.OK(t, err)
+	}
+
+	var set []string
+	defer func(orig func(path, name string, data []byte) error) { setxattrFunc = orig }(setxattrFunc)
+	setxattrFunc = func(path, name string, data []byte) error {
+		set = append(set, name)
+		return setxattr(path, name, data)
+	}
+
+	node := &data.Node{Type: data.NodeTypeFile, ExtendedAttributes: []data.ExtendedAttribute{
+		{Name: "user.diff", Value: []byte("new")},
+		{Name: "user.empty", Value: nil},
+		{Name: "user.new", Value: []byte("n")},
+		{Name: "user.same", Value: []byte("v")},
+	}}
+	rtest.OK(t, nodeRestoreExtendedAttributes(node, file, func(string) bool { return true }))
+	slices.Sort(set)
+	rtest.Equals(t, []string{"user.diff", "user.new"}, set)
+
+	got := &data.Node{Type: data.NodeTypeFile}
+	rtest.OK(t, nodeFillExtendedAttributes(got, file, false, t.Logf))
+	rtest.Assert(t, got.Equals(*node), "xattrs %v, want %v", got.ExtendedAttributes, node.ExtendedAttributes)
+}
+
+// BackOtter: bcachefs refusing bcachefs.casefold on a directory with
+// entries (ENOTEMPTY) is a warning, as chattr's F is (S6); the directory's
+// other attributes are still set, and ENOTEMPTY for any other attribute
+// stays an error.
+func TestRestoreCasefoldNotEmptyIsWarning(t *testing.T) {
+	dir := t.TempDir()
+	if err := setxattr(dir, "user.probe", []byte("p")); xattrUnsupported(err) {
+		t.Skipf("file system without extended attributes: %v", err)
+	}
+
+	defer func(orig func(path, name string, data []byte) error) { setxattrFunc = orig }(setxattrFunc)
+	setxattrFunc = func(path, name string, value []byte) error {
+		if name == bcachefsCasefold || name == "user.notempty" {
+			return &os.PathError{Op: "setxattr " + name, Path: path, Err: syscall.ENOTEMPTY}
+		}
+		return setxattr(path, name, value)
+	}
+
+	all := func(string) bool { return true }
+	node := &data.Node{Type: data.NodeTypeDir, ExtendedAttributes: []data.ExtendedAttribute{
+		{Name: bcachefsCasefold, Value: []byte("1")},
+		{Name: "user.other", Value: []byte("o")},
+	}}
+	err := nodeRestoreExtendedAttributes(node, dir, all)
+	rtest.Assert(t, err != nil, "no warning")
+	rtest.Assert(t, IsWarning(err), "not a warning: %v", err)
+	rest, warnings := SplitWarnings(err)
+	rtest.OK(t, rest)
+	rtest.Equals(t, 1, len(warnings))
+	rtest.Assert(t, strings.Contains(warnings[0].Error(), "casefolding (bcachefs.casefold) not restored on "+dir),
+		"warning %q", warnings[0])
+	value, err := getxattr(dir, "user.other")
+	rtest.OK(t, err)
+	rtest.Equals(t, "o", string(value))
+
+	node.ExtendedAttributes = []data.ExtendedAttribute{{Name: "user.notempty", Value: []byte("1")}}
+	err = nodeRestoreExtendedAttributes(node, dir, all)
+	rtest.Assert(t, err != nil && !IsWarning(err), "ENOTEMPTY for user.notempty: %v", err)
 }

@@ -3,9 +3,12 @@
 package fs
 
 import (
+	"bytes"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/restic/restic/internal/data"
 	"github.com/restic/restic/internal/debug"
@@ -36,6 +39,28 @@ func xattrKept(name string) bool {
 		!strings.HasPrefix(name, bcachefsEffective) && name != bcachefsOwnProject
 }
 
+// bcachefsCasefold is the extended attribute that holds a bcachefs
+// directory's casefolding option, which bcachefs sets, clears and even sets
+// again to the value it has only while the directory is empty (ENOTEMPTY).
+// A restore gives it to each directory it creates, or finds empty, before
+// anything goes in (PrepareDirForOptions).
+const bcachefsCasefold = "bcachefs.casefold"
+
+// casefoldNotEmpty tells whether err, from setting or removing the extended
+// attribute name, is bcachefs refusing to change the casefolding of a
+// directory with entries: a warning, as for chattr's F (S6), not an error.
+func casefoldNotEmpty(name string, err error) bool {
+	return name == bcachefsCasefold && errors.Is(err, syscall.ENOTEMPTY)
+}
+
+// casefoldWarning is the warning for casefoldNotEmpty's refusal on path.
+func casefoldWarning(path string) error {
+	return &FlagsWarning{Msg: fmt.Sprintf("casefolding (%v) not restored on %v: directory not empty", bcachefsCasefold, path)}
+}
+
+// setxattrFunc is setxattr, replaced by tests.
+var setxattrFunc = setxattr
+
 // selinuxLabel is the extended attribute that holds a file's SELinux label.
 const selinuxLabel = "security.selinux"
 
@@ -60,14 +85,34 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 	var errs []error
 	var unsupported XattrsWarning
 	expectedAttrs := map[string]struct{}{}
+
+	// BackOtter: an attribute the file has already, with its node's value,
+	// is left as it is, as in rustic-bko: bcachefs refuses to set
+	// bcachefs.casefold again on a directory with entries, even to the
+	// value it has, which the directory got as soon as the restore created
+	// it (PrepareDirForOptions).  The file's attributes are listed first;
+	// those it doesn't list are all set.
+	xattrs, listErr := listxattr(path)
+	present := make(map[string]struct{}, len(xattrs))
+	for _, name := range xattrs {
+		present[name] = struct{}{}
+	}
+
 	for _, attr := range node.ExtendedAttributes {
 		// Only restore xattrs that match the filter
 		if xattrSelectFilter(attr.Name) && xattrKept(attr.Name) {
 			expectedAttrs[attr.Name] = struct{}{}
-			err := setxattr(path, attr.Name, attr.Value)
+			if _, ok := present[attr.Name]; ok {
+				if value, err := getxattr(path, attr.Name); err == nil && bytes.Equal(value, attr.Value) {
+					continue
+				}
+			}
+			err := setxattrFunc(path, attr.Name, attr.Value)
 			switch {
 			case xattrUnsupported(err):
 				unsupported.add(path, attr.Name, err)
+			case casefoldNotEmpty(attr.Name, err):
+				errs = append(errs, casefoldWarning(path))
 			case err != nil:
 				errs = append(errs, err)
 			}
@@ -78,9 +123,8 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 	}
 
 	// remove unexpected xattrs
-	xattrs, err := listxattr(path)
-	if err != nil {
-		return errors.Join(append(errs, err)...)
+	if listErr != nil {
+		return errors.Join(append(errs, listErr)...)
 	}
 	for _, name := range xattrs {
 		if _, ok := expectedAttrs[name]; ok {
@@ -89,7 +133,11 @@ func nodeRestoreExtendedAttributes(node *data.Node, path string, xattrSelectFilt
 		// Only attempt to remove xattrs that match the filter
 		// BackOtter: nor the SELinux label (xattrNeverRemoved).
 		if xattrSelectFilter(name) && xattrKept(name) && !xattrNeverRemoved(name) {
-			if err := removexattr(path, name); err != nil {
+			err := removexattr(path, name)
+			switch {
+			case casefoldNotEmpty(name, err):
+				errs = append(errs, casefoldWarning(path))
+			case err != nil:
 				errs = append(errs, err)
 			}
 		}

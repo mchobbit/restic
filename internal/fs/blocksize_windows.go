@@ -6,5 +6,5 @@ import "os"
 // file being restored sparse (BackOtter): 4096, the file system's block
 // size not being looked up on Windows.
 func HoleBlockSize(_ *os.File) int64 {
-	return minHoleBlockSize
+	return defaultHoleBlockSize
 }

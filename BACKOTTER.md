@@ -496,11 +496,21 @@ own addition, made after that plan with the sparse-file work (batch 3).
   and sized, so bytes never written read as zeros: a block is allocated
   only if some chunk puts a byte other than zero in it.  B is the target
   file system's block size (`fstatfs`'s or `fstatvfs`'s `f_bsize`: 4096 on
-  ext4, XFS and tmpfs, the record size on ZFS on Linux and illumos), else
-  the file's `st_blksize`, and at least 4096; 4096 when neither is known
-  (and on Windows).  A file restored sparse so takes no more blocks than
-  the source's when the source's holes are aligned to B, but for the file
-  system's own (extent trees and the like).  Should such a file turn out
+  ext4, XFS and tmpfs as made by default, 512 on bcachefs formatted with
+  `block_size` 512 and on FreeBSD's ZFS, 1024 on ext2/3/4 and XFS with
+  1 KiB blocks, the record size on ZFS on Linux and illumos), else the
+  file's `st_blksize`, and at least 512; 4096 when neither is known (and
+  on Windows).  A file restored sparse so takes no more blocks than the
+  source's when the source's holes are aligned to B, but for the file
+  system's own (extent trees and the like); on bcachefs with 512-byte
+  blocks that keeps holes of 512 bytes (`cp --sparse=always` makes them).
+  Until round 23 B was at least 4096, and such a file came back dense
+  where its holes were all smaller.  A B smaller than the file system
+  can make a hole of (FreeBSD's ZFS reports 512, OpenBSD's FFS its
+  fragment) only cuts the chunks into more writes, not the blocks they
+  take: about 60 times as many writes for a disk image of an ext4 file
+  system (52,000 for 3 GiB, against 860 at 4096), 3 times as many for
+  executables; the file system makes every block with data whole.  Should such a file turn out
   to have data when it is opened (a race), it is truncated to 0 first, so
   that no hole sits over old bytes.  Before this rule, only each chunk's
   longest run of zeros at the start was left as a hole; a first version of
@@ -537,8 +547,15 @@ own addition, made after that plan with the sparse-file work (batch 3).
   after they are set, so set at the end with the other metadata the
   entries would lose the compression, replicas, targets or nocow they
   inherited, and get their project ID as their own.  Errors there are
-  silent: the directory's metadata at the end sets them all again, and
-  reports them.  As rustic-bko does.
+  silent: the directory's metadata at the end sets again each that isn't
+  right, and reports them.  That pass, as every restore of extended
+  attributes, leaves one the file has already with its node's value alone,
+  as rustic-bko does: bcachefs refuses `bcachefs.casefold` on a directory
+  with entries (`ENOTEMPTY`), even the value it has.  Where
+  `bcachefs.casefold` still has to change on a directory with entries (an
+  existing one, restored over), that refusal, setting or removing it, is a
+  warning, "casefolding (bcachefs.casefold) not restored on PATH:
+  directory not empty", as for F, not an error.  As rustic-bko does.
 - **S7 Late inode flags on Linux.**  After everything else, each file's kept
   flags but F are set to its node's, keeping the file system's own flags and
   F as they are; when that changes nothing, there is no `FS_IOC_SETFLAGS`
