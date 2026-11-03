@@ -360,11 +360,22 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
   metadata (owner, mode, times, extended attributes, ACLs, flags), as it
   does everything below it, when the restore creates the target or finds it
-  empty, where a directory holding only `lost+found` counts as empty (a new
-  file system's root: BackOtter's case).  Stock restic leaves the target as
-  it was, so a restored file system's root kept mkfs's mode and had no
-  SELinux label.  A target with other entries (`/tmp`, `/srv`) is left
-  exactly as stock restic leaves it.
+  fresh: a new file system's root, BackOtter's case.  The target is fresh
+  when walking it (never following symbolic links, but into the file
+  systems mounted below it) finds only directories, each of them empty or
+  holding only directories and the entries a file system is made with: a
+  `lost+found` directory (mkfs, newfs), and FreeBSD UFS's `.snap`
+  directory and `.sujournal` file (newfs, newfs -j); what these hold is not
+  looked at.  So a bare-metal restore's root still gets the node's
+  metadata with the other new file systems mounted below it (`/boot`,
+  `/boot/efi`, `/home`, ZFS datasets, btrfs subvolumes, and the plain
+  directories their mount points are in).  An empty directory is fresh;
+  more than 4096 directories is not.  rustic-bko follows the same rule.
+  Stock restic leaves the target as it was, so a restored file system's
+  root kept mkfs's mode and had no SELinux label.  A target with anything
+  else anywhere below it (a file, a symbolic link: `/tmp`, `/srv`) is left
+  exactly as stock restic leaves it: no chown, chmod, times, xattr or ACL
+  change, no flag change.
 - Access times, holes, Linux project IDs and casefolding follow the rules
   below, which rustic-bko follows too, so that either tool restores the
   other's snapshots the same way.
@@ -621,8 +632,8 @@ own addition, made after that plan with the sparse-file work (batch 3).
   directory inherited, as stock restic does.  That takes one open and
   `FS_IOC_GETFLAGS`, and `FS_IOC_SETFLAGS` only when F differs; a file system
   without inode flags or casefolding is left alone, silently.  This covers
-  the target of `ID:subfolder` when it is new (its node is the
-  subfolder's) and the
+  the target of `ID:subfolder` when it is new or fresh (its node is the
+  subfolder's; casefolding only while it is empty) and the
   unselected parents of `--include`d entries, which are created with their
   nodes' F.  A whole-snapshot restore's target, which has no node, is left
   as it is.  The late flag pass (S7) never touches F: if a directory's F

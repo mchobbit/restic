@@ -55,9 +55,11 @@ type Restorer struct {
 
 	// TargetNode, when restoring a subfolder of a snapshot ("ID:subfolder"),
 	// is the subfolder's own node, whose metadata the target directory gets
-	// when the restore creates it or finds it empty (but for "lost+found"):
-	// the root of a new file system would otherwise keep mkfs's defaults
-	// and no SELinux label.  A target with entries keeps its own owner,
+	// when the restore creates it or finds it fresh (freshTarget: holding
+	// only directories, with file systems mounted below it, and the entries
+	// mkfs makes, such as lost+found): the root of a new file system would
+	// otherwise keep mkfs's defaults and no SELinux label.  A target with
+	// files or other entries keeps its own owner,
 	// mode, timestamps, extended attributes and flags, as in stock restic
 	// (targetNode).
 	TargetNode *data.Node
@@ -798,12 +800,12 @@ func (res *Restorer) ensureParents() error {
 // targetNode returns the node whose metadata the target directory dst gets:
 // TargetNode, the subfolder's own node when restoring "ID:subfolder", but
 // only when dst is new: the restore creates it (nothing is there, which
-// MkdirAll and ensureDir create), or it is an empty directory, where one
-// holding only "lost+found" counts as empty (a new file system's root,
-// BackOtter's case).  Anything else at dst (a directory with entries, such
-// as /tmp or /srv) keeps its owner, mode, times, extended attributes, ACLs
-// and flags, as in stock restic, which never gives the target metadata.
-// nil when dst keeps its own.
+// MkdirAll and ensureDir create), or it is a fresh directory (freshTarget):
+// the root of a new file system, maybe with the new file systems of a
+// bare-metal restore mounted below it, BackOtter's case.  Anything else at
+// dst (a directory with files, such as /tmp or /srv) keeps its owner, mode,
+// times, extended attributes, ACLs and flags, as in stock restic, which
+// never gives the target metadata.  nil when dst keeps its own.
 func (res *Restorer) targetNode(dst string) *data.Node {
 	if res.TargetNode == nil {
 		return nil
@@ -815,37 +817,79 @@ func (res *Restorer) targetNode(dst string) *data.Node {
 	if err != nil || !fi.IsDir() {
 		return nil
 	}
-	if empty, err := emptyTarget(dst); err != nil || !empty {
-		debug.Log("target %v keeps its metadata: not empty (%v)", dst, err)
+	if fresh, err := freshTarget(dst); err != nil || !fresh {
+		debug.Log("target %v keeps its metadata: not fresh (%v)", dst, err)
 		return nil
 	}
 	return res.TargetNode
 }
 
-// emptyTarget tells whether the directory dst is empty but for a
-// "lost+found" directory.
-func emptyTarget(dst string) (bool, error) {
-	f, err := fs.Local{}.OpenFile(dst, fs.O_RDONLY|fs.O_DIRECTORY|fs.O_NOFOLLOW, false)
+// freshTargetMaxDirs bounds the directories freshTarget looks at: a target
+// with more is not taken for fresh.
+const freshTargetMaxDirs = 4096
+
+// freshTarget tells whether the directory dst holds nothing a restore could
+// be said to restore over: walking it (never following symbolic links, but
+// into the file systems mounted below it) finds only directories, each of
+// them empty or holding only directories and the entries a file system is
+// made with (fileSystemMadeEntry).  A bare-metal restore's target is the
+// new root file system with the others mounted below it before the restore
+// (/boot, /boot/efi, /home, ZFS datasets, btrfs subvolumes, with the
+// directories their mount points are in), where each holds at most its
+// lost+found, or UFS's .snap and .sujournal.  An empty directory is fresh.
+func freshTarget(dst string) (bool, error) {
+	budget := freshTargetMaxDirs
+	return freshDir(dst, &budget)
+}
+
+func freshDir(dir string, budget *int) (bool, error) {
+	*budget--
+	if *budget < 0 {
+		return false, nil
+	}
+	f, err := fs.Local{}.OpenFile(dir, fs.O_RDONLY|fs.O_DIRECTORY|fs.O_NOFOLLOW, false)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = f.Close() }()
-	names, err := f.Readdirnames(3)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	switch len(names) {
-	case 0:
-		return true, nil
-	case 1:
-		if names[0] != "lost+found" {
-			return false, nil
+	for {
+		names, err := f.Readdirnames(64)
+		for _, name := range names {
+			fi, lerr := fs.Lstat(filepath.Join(dir, name))
+			if lerr != nil {
+				return false, lerr
+			}
+			switch {
+			case fileSystemMadeEntry(name, fi):
+			case fi.IsDir():
+				if fresh, err := freshDir(filepath.Join(dir, name), budget); err != nil || !fresh {
+					return false, err
+				}
+			default:
+				return false, nil
+			}
 		}
-		fi, err := fs.Lstat(filepath.Join(dst, names[0]))
-		return err == nil && fi.IsDir(), nil
-	default:
-		return false, nil
+		if errors.Is(err, io.EOF) || err == nil && len(names) == 0 {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
 	}
+}
+
+// fileSystemMadeEntry tells whether the entry name, fi is one a new file
+// system is made with, whatever it holds: a "lost+found" directory (the
+// ext2/3/4 family's mkfs, UFS's newfs), and FreeBSD UFS's ".snap" directory
+// and ".sujournal" file (newfs, newfs -j).
+func fileSystemMadeEntry(name string, fi os.FileInfo) bool {
+	switch name {
+	case "lost+found", ".snap":
+		return fi.IsDir()
+	case ".sujournal":
+		return fi.Mode().IsRegular()
+	}
+	return false
 }
 
 // RestoreTo creates the directories and files in the snapshot below dst.

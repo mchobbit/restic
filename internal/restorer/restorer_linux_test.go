@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/restic/chunker"
@@ -724,4 +725,64 @@ func TestRestorerXFSOptions(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(dst, "ext"))
 	rtest.OK(t, err)
 	rtest.Equals(t, 70000, len(got))
+}
+
+// A bare-metal restore's target has the other new file systems mounted
+// below it before "ID:subfolder" is restored into it: it is still fresh,
+// and gets the subfolder's metadata, through a mount point holding a
+// lost+found; a file in the mounted file system makes it not fresh (A3).
+func TestRestorerTargetNodeMountedBelow(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("mounting a tmpfs needs root")
+	}
+	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{
+				Mode:    normalizeFileMode(0750 | os.ModeDir),
+				ModTime: timeForTest,
+				Nodes:   map[string]Node{"file": File{Data: "content: file\n"}},
+			},
+		},
+	}, noopGetGenericAttributes)
+	ctx := context.Background()
+	subtree, dirNode, err := data.FindTreeDirectoryNode(ctx, repo, sn.Tree, "/dir")
+	rtest.OK(t, err)
+	sub := *sn
+	sub.Tree = subtree
+
+	for _, withFile := range []bool{false, true} {
+		target := rtest.TempDir(t)
+		rtest.OK(t, os.Chmod(target, 0755))
+		mp := filepath.Join(target, "boot", "efi")
+		rtest.OK(t, os.MkdirAll(mp, 0755))
+		rtest.OK(t, unix.Mount("tmpfs", mp, "tmpfs", 0, "size=1m"))
+		t.Cleanup(func() { _ = unix.Unmount(mp, unix.MNT_DETACH) })
+		rtest.OK(t, os.Mkdir(filepath.Join(mp, "lost+found"), 0700))
+		if withFile {
+			rtest.OK(t, os.WriteFile(filepath.Join(mp, "EFI"), nil, 0644))
+		}
+		var st, pst unix.Stat_t
+		rtest.OK(t, unix.Lstat(mp, &st))
+		rtest.OK(t, unix.Lstat(filepath.Dir(mp), &pst))
+		rtest.Assert(t, st.Dev != pst.Dev, "%v is not a mount point", mp)
+
+		res := NewRestorer(repo, &sub, Options{})
+		res.TargetNode = dirNode
+		_, err = res.RestoreTo(ctx, target)
+		rtest.OK(t, err)
+
+		f, err := os.Stat(target)
+		rtest.OK(t, err)
+		if withFile {
+			rtest.Equals(t, os.FileMode(0755)|os.ModeDir, f.Mode())
+			rtest.Assert(t, !f.ModTime().Equal(timeForTest), "target with a file got the node's mtime")
+		} else {
+			checkConsistentInfo(t, "mounted below", f, timeForTest, normalizeFileMode(0750|os.ModeDir))
+		}
+		_, err = os.Stat(filepath.Join(mp, "lost+found"))
+		rtest.OK(t, err)
+		rtest.OK(t, unix.Unmount(mp, 0))
+	}
 }
