@@ -139,7 +139,7 @@ command:
           --tag tags                               add tags for the new snapshot in the format `tag[,tag,...]` (can be specified multiple times) (default [])
           --time time                              time of the backup (ex. '2012-11-01 22:08:41') (default: now)
           --use-fs-snapshot                        use filesystem snapshot where possible (currently only Windows VSS)
-          --with-atime                             store the atime for all files and directories (--with-atime=false stores the mtime in its place) (default true)
+          --with-atime                             store the atime for all files and directories
 
     Global Flags:
           --cacert file                      file to load root certificates from (default: use system certificates or $RESTIC_CACERT)

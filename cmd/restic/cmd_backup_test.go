@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/restic/restic/internal/errors"
+	"github.com/restic/restic/internal/fs"
 	rtest "github.com/restic/restic/internal/test"
 	"github.com/spf13/pflag"
 )
@@ -141,15 +142,18 @@ func TestReadFilenamesRaw(t *testing.T) {
 		"wrong error message: %v", err.Error())
 }
 
-// BackOtter stores the atime by default; --with-atime=false turns that off
-// (the "=" is needed: "--with-atime false" makes "false" a path).
+// --with-atime is off by default, as in stock restic (BackOtter passes it).
+// "--with-atime=false" turns it off again; "--with-atime false" makes
+// "false" a path.
 func TestBackupWithAtimeDefault(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		want bool
 		rest []string
 	}{
-		{nil, true, []string{}},
+		{nil, false, []string{}},
+		{[]string{"--with-atime"}, true, []string{}},
+		{[]string{"--with-atime=true"}, true, []string{}},
 		{[]string{"--with-atime=false"}, false, []string{}},
 		{[]string{"--with-atime", "false"}, true, []string{"false"}},
 	} {
@@ -160,4 +164,13 @@ func TestBackupWithAtimeDefault(t *testing.T) {
 		rtest.Equals(t, test.want, opts.WithAtime)
 		rtest.Equals(t, test.rest, set.Args())
 	}
+}
+
+// The size scan runs unless --no-scan, as in stock restic, on every OS;
+// only --with-atime skips it where listing a directory moves its atime.
+func TestBackupSizeScan(t *testing.T) {
+	rtest.Assert(t, sizeScan(BackupOptions{}), "no scan by default")
+	rtest.Assert(t, !sizeScan(BackupOptions{NoScan: true}), "scan with --no-scan")
+	rtest.Assert(t, !sizeScan(BackupOptions{NoScan: true, WithAtime: true}), "scan with --no-scan --with-atime")
+	rtest.Equals(t, fs.ListingKeepsAtimes, sizeScan(BackupOptions{WithAtime: true}))
 }

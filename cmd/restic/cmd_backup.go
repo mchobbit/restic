@@ -142,7 +142,7 @@ func (opts *BackupOptions) AddFlags(f *pflag.FlagSet) {
 	f.StringArrayVar(&opts.FilesFromVerbatim, "files-from-verbatim", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringArrayVar(&opts.FilesFromRaw, "files-from-raw", nil, "read the files to backup from `file` (can be combined with file args; can be specified multiple times)")
 	f.StringVar(&opts.TimeStamp, "time", "", "`time` of the backup (ex. '2012-11-01 22:08:41') (default: now)")
-	f.BoolVar(&opts.WithAtime, "with-atime", true, "store the atime for all files and directories (--with-atime=false stores the mtime in its place)")
+	f.BoolVar(&opts.WithAtime, "with-atime", false, "store the atime for all files and directories")
 	f.BoolVar(&opts.IgnoreInode, "ignore-inode", false, "ignore inode number and ctime changes when checking for modified files")
 	f.BoolVar(&opts.IgnoreCtime, "ignore-ctime", false, "ignore ctime changes when checking for modified files")
 	f.BoolVarP(&opts.DryRun, "dry-run", "n", false, "do not upload or write any data, just show what would be done")
@@ -487,6 +487,16 @@ func findParentSnapshot(ctx context.Context, repo restic.ListerLoaderUnpacked, o
 	return sn, err
 }
 
+// sizeScan tells whether a backup runs the scanner that gives the progress
+// its totals, ETA and percent_done: unless --no-scan, as in stock restic.
+// BackOtter: not either with --with-atime where listing a directory moves
+// its access time (fs.ListingKeepsAtimes: every Unix but Linux), which the
+// snapshot would then keep: the scanner lists each directory before the
+// archiver takes its lstat.
+func sizeScan(opts BackupOptions) bool {
+	return !opts.NoScan && (fs.ListingKeepsAtimes || !opts.WithAtime)
+}
+
 func runBackup(ctx context.Context, opts BackupOptions, gopts global.Options, term ui.Terminal, args []string) error {
 	var vsscfg fs.VSSConfig
 	var err error
@@ -632,12 +642,10 @@ func runBackup(ctx context.Context, opts BackupOptions, gopts global.Options, te
 	cancelCtx, cancel := context.WithCancel(wgCtx)
 	defer cancel()
 
-	// BackOtter: no scan where listing a directory moves its access time
-	// (fs.ListingKeepsAtimes), which the snapshot keeps.
-	if !opts.NoScan && !fs.ListingKeepsAtimes {
-		debug.Log("no scan: listing directories here moves their access times")
+	if !opts.NoScan && !sizeScan(opts) {
+		debug.Log("no scan: listing directories here moves the access times --with-atime stores")
 	}
-	if !opts.NoScan && fs.ListingKeepsAtimes {
+	if sizeScan(opts) {
 		sc := archiver.NewScanner(targetFS)
 		sc.SelectByName = selectByNameFilter
 		sc.Select = selectFilter
