@@ -65,7 +65,9 @@ func HasHolesToFill(path string, size int64) bool {
 // so gets no close-write event, and a running program's file no ETXTBSY.
 // It returns whether the file got blocks.  A file system that can't
 // preallocate (EOPNOTSUPP) is nothing to do.  Any other failure (ENOSPC) is
-// returned, for the restorer to warn about.
+// returned, for the restorer to warn about, with whether the file got
+// blocks all the same: it is looked at again after a failed fallocate,
+// which may have allocated part of the holes.
 func FillHoles(path string, size int64) (bool, error) {
 	st, holes := fileHoles(path, size)
 	if !holes {
@@ -89,12 +91,17 @@ func FillHoles(path string, size int64) (bool, error) {
 		debug.Log("not filling holes of %v: %v", path, err)
 		return false, nil
 	}
-	if err != nil {
-		return false, &os.PathError{Op: "fallocate", Path: path, Err: err}
-	}
 	var after unix.Stat_t
-	if err := unix.Fstat(fd, &after); err != nil {
-		return true, nil
+	grew := true
+	if ferr := unix.Fstat(fd, &after); ferr == nil {
+		grew = after.Blocks > before.Blocks
+	} else if err != nil {
+		grew = false
 	}
-	return after.Blocks > before.Blocks, nil
+	if err != nil {
+		// ext4 and XFS keep what fallocate allocated before it failed
+		// (ENOSPC): the file has changed if its blocks grew.
+		return grew, &os.PathError{Op: "fallocate", Path: path, Err: err}
+	}
+	return grew, nil
 }

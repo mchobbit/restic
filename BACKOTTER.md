@@ -16,7 +16,9 @@ restic (`--ownership-by-name` maps names).
 
 **Snapshots BackOtter didn't write.**  A snapshot whose program version
 contains `+backotter` (`restic X.Y.Z+backotter.N`, rustic-bko's `rustic
-vX.Y.Z+backotter.N`; `rewrite` and `copy` keep the original's) comes from
+vX.Y.Z+backotter.N`; `rewrite`, `repair snapshots`, `copy` and `tag` keep
+the original's, and `recover`, whose snapshot holds trees of any origin,
+writes none, as stock restic does, so its snapshot is not one) comes from
 a build that records every attribute it can, so there a node without one
 had none (no file flags, project ID 0, no holes).  In any other snapshot
 (stock restic's, stock rustic's) a missing attribute is unknown, and the
@@ -630,12 +632,18 @@ own addition, made after that plan with the sparse-file work (batch 3).
   `ETXTBSY`.  A file that got blocks so is reported as updated, not
   unchanged; `--dry-run` reports what would be.  A failure (`ENOSPC`) is a
   warning ("PATH: holes not filled: ..."), and the restore's exit status
-  is that of other metadata warnings (0); a file system that can't
+  is that of other metadata warnings (0); the file is looked at again
+  after it, and reported as updated if its blocks grew all the same (ext4
+  and XFS keep what `fallocate` allocated before it ran out of space).  A
+  file system that can't
   preallocate (`EOPNOTSUPP`) is nothing to do.  A stock snapshot doesn't
   say which files had holes, so there such a file keeps its holes, as in
-  stock restic.  macOS's `F_PREALLOCATE` (`F_PEOFPOSMODE`) only allocates
-  past the end of file, not in the holes inside it, so macOS fills none,
-  nor do the other systems.
+  stock restic.  Holes are filled on Linux only, by both tools.  On macOS
+  neither fills them: `F_PREALLOCATE` (`F_PEOFPOSMODE`) only allocates
+  past the end of file, not in the holes inside it, and the only other way
+  is writing zeros into each hole, which would write into a file whose
+  contents already match; such a file keeps its holes there, as in stock
+  restic.  The BSDs and illumos have no such call either.
 - **S6 Casefolding (`FS_CASEFOLD_FL`, chattr's F) is set at creation.**  On
   Linux, every directory the restore creates, and every existing one that is
   still empty when the restore reaches it, gets its F made to match its
