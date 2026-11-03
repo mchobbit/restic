@@ -49,3 +49,19 @@ func testLoadJSONUnpacked(t *testing.T, version uint) {
 	rtest.Equals(t, sn.Hostname, sn2.Hostname)
 	rtest.Equals(t, sn.Username, sn2.Username)
 }
+
+// BackOtter: a snapshot restic-bko or rustic-bko wrote is told apart from
+// stock restic's and stock rustic's by its program version.
+func TestSnapshotFromBackOtter(t *testing.T) {
+	for version, want := range map[string]bool{
+		"restic 0.19.1+backotter.3":  true,
+		"rustic v0.11.4+backotter.3": true,
+		"restic 0.18.1":              false,
+		"rustic v0.11.0":             false,
+		"":                           false,
+	} {
+		rtest.Equals(t, want, (&data.Snapshot{ProgramVersion: version}).FromBackOtter())
+	}
+	var none *data.Snapshot
+	rtest.Assert(t, !none.FromBackOtter(), "nil snapshot from BackOtter")
+}

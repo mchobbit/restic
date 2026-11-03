@@ -92,9 +92,9 @@ A file that had holes when it was backed up (this build marks it with the
 ``unix.sparse`` generic attribute) is restored as a sparse file again, if it
 goes into a new file: restic leaves each run of zero bytes at the start of
 each of its chunks as a hole. Every other file is fully allocated, zeros and
-all, so that a swap file or a preallocated database file comes back usable; an
-existing file whose contents are right already but that has holes gets them
-filled. Use ``restore --sparse`` to make holes in every new file, if supported
+all, so that a swap file or a preallocated database file comes back usable; in
+a snapshot made by this build (or by BackOtter's rustic), an existing file whose
+contents are right already but that has holes gets them filled on Linux. Use ``restore --sparse`` to make holes in every new file, if supported
 by the filesystem. A file that exists already is never restored sparse, since
 a hole would leave its old contents in place. Reading from a hole returns the
 original zero bytes, but it does not consume disk space. Note that the exact

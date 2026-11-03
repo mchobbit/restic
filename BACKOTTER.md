@@ -5,7 +5,32 @@ rescue stick needs, kept on top of restic's latest release. It is not a
 separate project: each patch is small, and the branch is rebased onto every
 new restic release rather than merged.
 
-## What it adds
+## Defaults: stock restic's
+
+For someone who isn't BackOtter, this build behaves as stock restic does
+wherever stock restic's behaviour is not a bug, and adds metadata on top.
+BackOtter passes options of its own for what it needs differently:
+`backup --with-atime` (real access times; stock's default stores the mtime
+in their place).  Owners are restored by their numeric IDs, as in stock
+restic (`--ownership-by-name` maps names).
+
+**Snapshots BackOtter didn't write.**  A snapshot whose program version
+contains `+backotter` (`restic X.Y.Z+backotter.N`, rustic-bko's `rustic
+vX.Y.Z+backotter.N`; `rewrite` and `copy` keep the original's) comes from
+a build that records every attribute it can, so there a node without one
+had none (no file flags, project ID 0, no holes).  In any other snapshot
+(stock restic's, stock rustic's) a missing attribute is unknown, and the
+restore leaves what the target has, as stock restic does
+(`data.Snapshot.FromBackOtter`, which the restorer asks of the snapshot it
+restores; rustic-bko follows the same rule).  So, for a stock snapshot:
+- a file whose contents match keeps its holes (no hole filling, S5);
+- a directory the restore creates keeps the casefolding it inherited
+  (ext4/f2fs `+F`), and on bcachefs a file or directory the project ID it
+  inherited (S6, S8);
+- restricting flags (immutable, append-only, undeletable) on what the
+  restore finds in its way are left as they are, and the restore fails for
+  that file as stock restic does (below, "Restoring over flags that refuse
+  it").
 
 - Metadata that stock restic doesn't back up, stored as generic attributes
   with OS-prefixed names, so stock restic can still read and restore every
@@ -103,8 +128,9 @@ new restic release rather than merged.
     inherit it then; the restore gives no file an ID it has already, so an
     entry that inherited its ID in the original comes back inheriting it,
     with no `bcachefs.project` of its own, and there a node without
-    `linux.project_id` gets 0 where the file inherited another.  Elsewhere
-    a node without one leaves the file's ID as it is.  Accepted difference
+    `linux.project_id` in a snapshot from BackOtter gets 0 where the file
+    inherited another; in another snapshot it keeps the inherited one.
+    Elsewhere a node without one leaves the file's ID as it is.  Accepted difference
     (both tools): a bcachefs file given its directory's project ID by hand
     comes back inheriting it.
   - `linux.zfs_dos_flags`: the DOS flags OpenZFS keeps on Linux
@@ -151,10 +177,11 @@ new restic release rather than merged.
     which keep none.
   A file only gets an attribute when it has something the mode doesn't say
   (flags, a non-trivial ACL, a project ID, holes), so trees of ordinary
-  files are what stock restic writes, except that atimes are real (see
-  below), files with holes carry `unix.sparse`, and on FreeBSD, NetBSD and
-  illumos every file its birth time.  On other systems, with
-  `--with-atime=false` and no holes, they are what stock restic writes
+  files are what stock restic writes, except that files with holes carry
+  `unix.sparse`, and on FreeBSD, NetBSD and illumos every file its birth
+  time (and atimes are real with `--with-atime`, as in stock restic).  On
+  other systems, without `--with-atime` and with no holes, they are what
+  stock restic writes
   with `RESTIC_FEATURES=device-id-for-hardlinks=true` (by default it
   stores a device ID on every node: see below), save that extended
   attributes come in the order of their names (stock restic keeps the
@@ -276,9 +303,14 @@ new restic release rather than merged.
   inheritance, as on illumos; on UFS (`ENOTTY`) they are a warning (S10).
 - **Restoring over flags that refuse it.**  Before the restore touches a
   file or directory it finds at a node's path (to rewrite it, give it its
-  metadata, replace it, link over it, put entries in it, or remove it with
-  `--delete`), it clears the flags that would refuse that, keeping the
-  others: on FreeBSD immutable, append-only and undeletable, the owner's and
+  metadata, replace it, link over it, or put entries in it), it clears the
+  flags that would refuse that, keeping the others, but only where it knows
+  the node's flags: the node has them, or the snapshot is from BackOtter
+  (where a node without them had none).  A node without flags in another
+  snapshot leaves the file's flags alone, and the restore fails for it
+  ("operation not permitted"), as stock restic does.  `--delete` never
+  clears flags: a protected file it would remove stays, with the error, as
+  in stock restic.  The flags cleared: on FreeBSD immutable, append-only and undeletable, the owner's and
   the system's (`uchg`, `uappnd`, `uunlnk`, `schg`, `sappnd`, `sunlnk`), and
   ZFS's DOS read-only (`urdonly`), which refuses writes too; on NetBSD and
   OpenBSD `uchg`, `uappnd`, `schg`, `sappnd`; on DragonFly those and
@@ -289,7 +321,8 @@ new restic release rather than merged.
   FreeBSD (whose `libc.so.7`, `ld-elf.so.1`, `init` and `su` are `schg`)
   puts back the snapshot's contents and metadata.  Files the restore leaves
   alone (`--overwrite never`, or `if-newer` with a newer file) keep their
-  flags.  Clearing a system flag takes root at securelevel 0 or below (a
+  flags.  There is no option to clear flags in other cases: BackOtter's
+  restores over an existing tree clear them first themselves.  Clearing a system flag takes root at securelevel 0 or below (a
   rescue system's is -1); where it is refused, what the restore does next
   fails as before, with the error.  Before this, such a file kept its
   changed contents and the restore exited 1 ("operation not permitted").
@@ -325,9 +358,13 @@ new restic release rather than merged.
   assembler address them absolutely, as dynamic imports must be on
   illumos (`useAbs` in `cmd/internal/obj/x86`).
 - Restoring `ID:subfolder` gives the target directory the subfolder's own
-  metadata, as it does everything below it; stock restic leaves the target
-  as it was, so a restored file system's root keeps mkfs's mode and has no
-  SELinux label.
+  metadata (owner, mode, times, extended attributes, ACLs, flags), as it
+  does everything below it, when the restore creates the target or finds it
+  empty, where a directory holding only `lost+found` counts as empty (a new
+  file system's root: BackOtter's case).  Stock restic leaves the target as
+  it was, so a restored file system's root kept mkfs's mode and had no
+  SELinux label.  A target with other entries (`/tmp`, `/srv`) is left
+  exactly as stock restic leaves it.
 - Access times, holes, Linux project IDs and casefolding follow the rules
   below, which rustic-bko follows too, so that either tool restores the
   other's snapshots the same way.
@@ -400,7 +437,7 @@ new restic release rather than merged.
   openSUSE.  The file keeps the label the restore gave it.  A node with a
   label sets it, as before.  The same in rustic-bko.
 - Restores over existing files clear immutable and append-only first
-  (`fs.ClearRestrictingFlags`), through `FS_IOC_FSSETXATTR`, then
+  (`fs.ClearRestrictingFlags`, where the node's flags are known: above), through `FS_IOC_FSSETXATTR`, then
   through `FS_IOC_SETFLAGS` where that left either set: on Ubuntu 24.04's
   OpenZFS (2.2) `FS_IOC_FSSETXATTR` cleared immutable but left append-only,
   as if it read `fsx_xflags` as `FS_IOC_GETFLAGS`'s flags (where
@@ -440,10 +477,12 @@ can.  S1 to S11 are their numbers in BackOtter's plan; S12 is BackOtter's
 own addition, made after that plan with the sparse-file work (batch 3).
 
 - **S1 Access times.**  Backup stores each file's and directory's real atime
-  by default; `--with-atime=false` stores the mtime in its place, as stock
-  restic does (the `=` is needed: `--with-atime false` backs up a path named
-  "false").  rustic-bko's switch is `--set-atime mtime`.  Neither tool
-  changes the source's atimes where it can help it: on Linux every file
+  with `--with-atime` (BackOtter passes it); by default it stores the mtime
+  in its place, as stock restic does (`--with-atime=false` too; the `=` is
+  needed: `--with-atime false` backs up a path named "false").
+  rustic-bko's switch is `--set-atime yes`; its default, as stock rustic's,
+  is `--set-atime mtime`.  Neither tool changes the source's atimes where it
+  can help it: on Linux every file
   opened for reading and every directory opened for listing gets
   `O_NOATIME`, retried without it on `EPERM` (neither its owner nor root).
   Symlinks can't be spared: Linux's `readlink(2)` updates a symlink's atime
@@ -456,19 +495,21 @@ own addition, made after that plan with the sparse-file work (batch 3).
   ZFS's `atime=off`; reading a file moves its own).  So both tools take a
   directory's `lstat` before they list it, the backup's root included
   (restic's archiver always did; rustic-bko's walker now keeps the metadata
-  it takes before it reads a directory), and neither runs its size scan
-  there (as with `--no-scan`; restic's scanner and rustic-bko's run beside
-  the backup, listing directories before the backup reaches them, which
-  gave the snapshot the scan's time as their atimes).  Progress then shows
-  no total or ETA.  Files' atimes are those before the backup read them.
+  it takes before it reads a directory), and with real atimes stored
+  neither runs its size scan there (as with `--no-scan`; restic's scanner
+  and rustic-bko's run beside the backup, listing directories before the
+  backup reaches them, which gave the snapshot the scan's time as their
+  atimes).  Progress then shows no total or ETA.  With the default (the
+  mtime in the atime's place) the scan runs on every system, as in stock.  Files' atimes are those before the backup read them.
   Linux, with `O_NOATIME`, keeps its scan.  `rewrite` keeps the stored
   atimes.  `restore --verify` reads
   the restored files with `O_NOATIME`, so it doesn't undo their atimes.
-- **S2 Ownership.**  Restore gives files their numeric uid and gid by
-  default.  `--ownership-by-name` (rustic-bko: `--by-name`, or its alias
-  `--ownership-by-name`) gives them the IDs their user and group names have
-  on the target instead; a name that is empty or unknown there falls back
-  to the saved ID, never to 0.  A restore not running as root ignores the
+- **S2 Ownership.**  Each tool keeps its stock default: restic restores
+  files' numeric uid and gid, and `--ownership-by-name` gives them the IDs
+  their user and group names have on the target instead; rustic-bko, as
+  stock rustic, maps names by default, and `--numeric-id` gives the numeric
+  IDs (BackOtter passes it).  A name that is empty or unknown there falls
+  back to the saved ID, never to 0.  A restore not running as root ignores the
   ownership it can't set (`EPERM`, `EACCES`), as stock restic does, and so
   does rustic-bko, which warned about each file (the root-owned directories
   above the restored path, say); any other metadata it isn't permitted to set (`EPERM`, `EACCES`:
@@ -554,18 +595,34 @@ own addition, made after that plan with the sparse-file work (batch 3).
   nothing), and then every byte, zero chunks included, is written.  An
   existing file that is written into is truncated if it is longer, then
   preallocated the same way.  An existing file left as it is, because its
-  contents are right, is preallocated on Linux and macOS if it is not
-  restored sparse by S4's first condition and has holes (`blocks*512 <
-  size`): that fills the holes of a swap file left by an interrupted
-  restore.  Not with `--dry-run`.  Preallocation errors are only logged.
+  contents are right, is preallocated on Linux if the snapshot is from
+  BackOtter, the file is not restored sparse by S4's first condition
+  (marked, or `--sparse`) and it has holes by S3 (its lstat shows
+  `blocks*512 < size`, and then, opened read-only, SEEK_HOLE finds one;
+  never on ZFS, where `fallocate` allocates nothing): that fills the holes
+  of a swap file left by an interrupted restore.  Only then is the file
+  opened for writing, so an unchanged file gets no close-write event
+  (Syncthing, indexers, antivirus) and a running program's file no
+  `ETXTBSY`.  A file that got blocks so is reported as updated, not
+  unchanged; `--dry-run` reports what would be.  A failure (`ENOSPC`) is a
+  warning ("PATH: holes not filled: ..."), and the restore's exit status
+  is that of other metadata warnings (0); a file system that can't
+  preallocate (`EOPNOTSUPP`) is nothing to do.  A stock snapshot doesn't
+  say which files had holes, so there such a file keeps its holes, as in
+  stock restic.  macOS's `F_PREALLOCATE` (`F_PEOFPOSMODE`) only allocates
+  past the end of file, not in the holes inside it, so macOS fills none,
+  nor do the other systems.
 - **S6 Casefolding (`FS_CASEFOLD_FL`, chattr's F) is set at creation.**  On
   Linux, every directory the restore creates, and every existing one that is
   still empty when the restore reaches it, gets its F made to match its
   node's before anything goes in: set when the node has it, cleared (an F
-  inherited from the parent) when it doesn't.  That takes one open and
+  inherited from the parent) when it doesn't and the snapshot is from
+  BackOtter.  In another snapshot a node without flags leaves the F the
+  directory inherited, as stock restic does.  That takes one open and
   `FS_IOC_GETFLAGS`, and `FS_IOC_SETFLAGS` only when F differs; a file system
   without inode flags or casefolding is left alone, silently.  This covers
-  the target of `ID:subfolder` (its node is the subfolder's) and the
+  the target of `ID:subfolder` when it is new (its node is the
+  subfolder's) and the
   unselected parents of `--include`d entries, which are created with their
   nodes' F.  A whole-snapshot restore's target, which has no node, is left
   as it is.  The late flag pass (S7) never touches F: if a directory's F
@@ -576,7 +633,7 @@ own addition, made after that plan with the sparse-file work (batch 3).
   or found empty) get their own options then too, before anything goes in:
   their `bcachefs.*` extended attributes (those `--include-xattr` and
   `--exclude-xattr` select) and their project ID, 0 where the node has
-  none.  bcachefs passes a directory's options only to entries created
+  none in a snapshot from BackOtter (in another, the inherited one stays).  bcachefs passes a directory's options only to entries created
   after they are set, so set at the end with the other metadata the
   entries would lose the compression, replicas, targets or nocow they
   inherited, and get their project ID as their own.  Errors there are

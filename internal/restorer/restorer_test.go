@@ -861,7 +861,10 @@ func TestRestorerConsistentTimestampsAndPermissions(t *testing.T) {
 }
 
 // Restoring "ID:subfolder" gives the target directory the subfolder's own
-// metadata; restoring without its node leaves the target as it was.
+// metadata when the restore creates it or finds it empty (but for a
+// "lost+found" directory: a new file system's root); a target with other
+// entries, and any target restored without the node, is left as it was, as
+// in stock restic.
 func TestRestorerTargetNodeMetadata(t *testing.T) {
 	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
 	repo := repository.TestRepository(t)
@@ -884,28 +887,54 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 	rtest.Assert(t, dirNode != nil && dirNode.Name == "dir", "wrong node for /dir: %v", dirNode)
 	sn.Tree = subtree
 
-	for _, withNode := range []bool{true, false} {
-		target := filepath.Join(rtest.TempDir(t), "target")
-		rtest.OK(t, os.Mkdir(target, 0755))
-		before, err := os.Stat(target)
-		rtest.OK(t, err)
+	for _, test := range []struct {
+		name    string
+		prepare func(target string)
+		gets    bool // the target gets the node's metadata
+	}{
+		{"new", func(string) {}, true},
+		{"empty", func(target string) { rtest.OK(t, os.Mkdir(target, 0755)) }, true},
+		{"lost+found", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))
+		}, true},
+		{"entries", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, "other"), nil, 0644))
+		}, false},
+		{"lost+found file", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, "lost+found"), nil, 0644))
+		}, false},
+	} {
+		for _, withNode := range []bool{true, false} {
+			target := filepath.Join(rtest.TempDir(t), "target")
+			test.prepare(target)
+			var before os.FileInfo
+			if test.name != "new" {
+				before, err = os.Stat(target)
+				rtest.OK(t, err)
+			}
 
-		res := NewRestorer(repo, sn, Options{})
-		if withNode {
-			res.TargetNode = dirNode
-		}
-		_, err = res.RestoreTo(ctx, target)
-		rtest.OK(t, err)
+			res := NewRestorer(repo, sn, Options{})
+			if withNode {
+				res.TargetNode = dirNode
+			}
+			_, err = res.RestoreTo(ctx, target)
+			rtest.OK(t, err)
 
-		f, err := os.Stat(target)
-		rtest.OK(t, err)
-		if withNode {
-			checkConsistentInfo(t, "target", f, timeForTest, normalizeFileMode(0750|os.ModeDir))
-		} else {
-			rtest.Equals(t, before.Mode(), f.Mode())
+			f, err := os.Stat(target)
+			rtest.OK(t, err)
+			switch {
+			case withNode && test.gets:
+				checkConsistentInfo(t, test.name, f, timeForTest, normalizeFileMode(0750|os.ModeDir))
+			case before != nil:
+				rtest.Equals(t, before.Mode(), f.Mode())
+				rtest.Assert(t, !f.ModTime().Equal(timeForTest), "%v: target got the node's mtime", test.name)
+			}
+			_, err = os.Stat(filepath.Join(target, "file"))
+			rtest.OK(t, err)
 		}
-		_, err = os.Stat(filepath.Join(target, "file"))
-		rtest.OK(t, err)
 	}
 }
 

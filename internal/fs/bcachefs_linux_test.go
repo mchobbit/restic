@@ -35,7 +35,7 @@ func TestPrepareDirForOptionsNotBcachefs(t *testing.T) {
 	node := &data.Node{Type: data.NodeTypeDir, ExtendedAttributes: []data.ExtendedAttribute{
 		{Name: "user.backotter", Value: []byte("x")},
 	}}
-	PrepareDirForOptions(d, node, func(string) bool { return true })
+	PrepareDirForOptions(d, node, func(string) bool { return true }, true)
 	names, err := listxattr(d)
 	rtest.OK(t, err)
 	rtest.Assert(t, !slices.Contains(names, "user.backotter"), "user.backotter set early off bcachefs")
@@ -89,8 +89,10 @@ func effectiveProject(t *testing.T, path string) uint32 {
 // On bcachefs a directory's options and project ID go on before its entries,
 // which inherit them; an entry whose project ID is its directory's isn't
 // given it again (it stays inherited, with no bcachefs.project of its own),
-// one without a project ID gets 0, and a snapshot's bcachefs.project is
-// neither set nor a reason for an error.
+// one without a project ID gets 0 from RestoreZeroProjectID (a snapshot
+// from BackOtter) and keeps the inherited one otherwise (stock restic), as
+// does a directory without one prepared without absentIsZero, and a
+// snapshot's bcachefs.project is neither set nor a reason for an error.
 func TestBcachefsDirOptionsInherited(t *testing.T) {
 	mnt := mountBcachefs(t)
 	d := filepath.Join(mnt, "d")
@@ -100,8 +102,12 @@ func TestBcachefsDirOptionsInherited(t *testing.T) {
 		{Name: "bcachefs.project", Value: []byte("43")}, // an older snapshot's
 	}}
 	dir.SetProjectID(43)
-	PrepareDirForOptions(d, dir, func(string) bool { return true })
+	PrepareDirForOptions(d, dir, func(string) bool { return true }, true)
 	rtest.Equals(t, uint32(43), effectiveProject(t, d))
+	stock := filepath.Join(d, "stock")
+	rtest.OK(t, os.Mkdir(stock, 0o755))
+	PrepareDirForOptions(stock, &data.Node{Type: data.NodeTypeDir}, func(string) bool { return true }, false)
+	rtest.Equals(t, uint32(43), effectiveProject(t, stock))
 
 	kid := filepath.Join(d, "kid")
 	rtest.OK(t, os.WriteFile(kid, []byte("data"), 0o644))
@@ -115,6 +121,8 @@ func TestBcachefsDirOptionsInherited(t *testing.T) {
 	kidNode.SetProjectID(43)
 	rtest.OK(t, nodeRestoreOSAttributes(kidNode, kid))
 	rtest.OK(t, nodeRestoreOSAttributes(&data.Node{Type: data.NodeTypeFile}, zero))
+	rtest.Equals(t, uint32(43), effectiveProject(t, zero))
+	RestoreZeroProjectID(zero, data.NodeTypeFile)
 	rtest.OK(t, nodeRestoreOSAttributes(dir, d))
 	rtest.OK(t, nodeRestoreExtendedAttributes(dir, d, func(string) bool { return true }))
 

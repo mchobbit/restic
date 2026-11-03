@@ -54,11 +54,12 @@ type Restorer struct {
 	XattrSelectFilter func(xattrName string) (xattrSelectedForRestore bool)
 
 	// TargetNode, when restoring a subfolder of a snapshot ("ID:subfolder"),
-	// is the subfolder's own node, whose metadata the target directory gets.
-	// Without it the target keeps its own owner, mode, timestamps and
-	// extended attributes: harmless for a scratch directory, but when the
-	// target is the root of a new file system, that root keeps mkfs's
-	// defaults and no SELinux label.
+	// is the subfolder's own node, whose metadata the target directory gets
+	// when the restore creates it or finds it empty (but for "lost+found"):
+	// the root of a new file system would otherwise keep mkfs's defaults
+	// and no SELinux label.  A target with entries keeps its own owner,
+	// mode, timestamps, extended attributes and flags, as in stock restic
+	// (targetNode).
 	TargetNode *data.Node
 }
 
@@ -309,8 +310,9 @@ func (res *Restorer) traverseTreeInner(ctx context.Context, target, location str
 func (res *Restorer) restoreNodeTo(node *data.Node, target, location string) error {
 	if !res.opts.DryRun {
 		debug.Log("restoreNode %v %v %v", node.Name, target, location)
-		// BackOtter: flags that refuse removal come off first.
-		fs.ClearRestrictingFlags(target)
+		// BackOtter: flags that refuse removal come off first, where
+		// the node says what they are (clearRestrictingFlags).
+		res.clearRestrictingFlags(node, target)
 		if err := fs.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.Wrap(err, "RemoveNode")
 		}
@@ -336,6 +338,12 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 		err = res.warnAboutAll(location, err)
 	}
+	// BackOtter: a node without a project ID in a snapshot from BackOtter
+	// had project ID 0; in another, the file keeps the one it has (one it
+	// inherited from its directory on bcachefs), as in stock restic.
+	if _, ok, _ := node.ProjectID(); !ok && res.sn.FromBackOtter() {
+		fs.RestoreZeroProjectID(target, node.Type)
+	}
 	flags, hasFlags := res.nodeFileFlags(node, location)
 	dosFlags, hasDosFlags := res.nodeZFSDosFlags(node, location)
 	fatAttrs, hasFatAttrs := res.nodeFATAttributes(node, location)
@@ -351,6 +359,65 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 		})
 	}
 	return err
+}
+
+// nodeFlagsKnown tells whether the restore knows node's file flags: the node
+// has them (fs.NodeFileFlags), or the snapshot is from BackOtter, whose
+// nodes record every file's flags, so that one without them had none
+// (data.Snapshot.FromBackOtter).  A node without flags in another snapshot
+// (stock restic's, stock rustic's) says nothing about them.
+func (res *Restorer) nodeFlagsKnown(node *data.Node) bool {
+	if res.sn.FromBackOtter() {
+		return true
+	}
+	_, ok, _ := fs.NodeFileFlags(node)
+	return ok
+}
+
+// clearRestrictingFlags clears the flags of the file at target, which the
+// restore is about to rewrite, replace, put entries in or give metadata
+// to, that would refuse that (fs.ClearRestrictingFlags), but only where the
+// restore knows node's flags (nodeFlagsKnown), so that the late flags pass
+// gives the file those it should have.  Otherwise the file keeps its
+// flags, and what the restore does next fails as in stock restic, with
+// the error.  Never for what --delete removes.
+func (res *Restorer) clearRestrictingFlags(node *data.Node, target string) {
+	if node == nil || !res.nodeFlagsKnown(node) {
+		return
+	}
+	fs.ClearRestrictingFlags(target)
+}
+
+// metadataOnly is a regular file whose contents are right already: the
+// restore only gives it its metadata.  BackOtter: in a snapshot from
+// BackOtter, a file not marked unix.sparse had no holes at backup, so one
+// with holes now (a swap file from an interrupted restore, holes punched
+// since) gets them filled, unless --sparse.  A stock snapshot says nothing
+// about holes: such a file keeps them, as in stock restic.  Only a file
+// whose lstat shows holes is opened at all.  It is reported as updated when
+// it got blocks (or, with --dry-run, would get them), else as unchanged; a
+// failure is a warning.
+func (res *Restorer) metadataOnly(node *data.Node, target, location string, sparse bool) {
+	if res.opts.Sparse || sparse || !res.sn.FromBackOtter() || node.Size == 0 {
+		res.opts.Progress.AddSkippedFile(location, node.Size)
+		return
+	}
+	var filled bool
+	if res.opts.DryRun {
+		filled = fs.HasHolesToFill(target, int64(node.Size))
+	} else {
+		var err error
+		filled, err = fs.FillHoles(target, int64(node.Size))
+		if err != nil {
+			res.warn(fmt.Sprintf("%v: holes not filled: %v", location, err))
+		}
+	}
+	if !filled {
+		res.opts.Progress.AddSkippedFile(location, node.Size)
+		return
+	}
+	res.opts.Progress.AddFile(node.Size)
+	res.opts.Progress.AddProgress(location, restoreui.ActionFileUpdated, node.Size, node.Size)
 }
 
 // nodeFATAttributes returns the FAT attributes node holds for this OS, and
@@ -612,7 +679,7 @@ func (res *Restorer) restoreFileFlags() error {
 
 func (res *Restorer) restoreHardlinkAt(node *data.Node, target, path, location string) error {
 	if !res.opts.DryRun {
-		fs.ClearRestrictingFlags(path)
+		res.clearRestrictingFlags(node, path)
 		if err := fs.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return errors.Wrap(err, "RemoveCreateHardlink")
 		}
@@ -638,7 +705,6 @@ func (res *Restorer) ensureDir(target string) error {
 	}
 	if err == nil && !fi.IsDir() {
 		// try to cleanup unexpected file
-		fs.ClearRestrictingFlags(target)
 		if err := fs.Remove(target); err != nil {
 			return fmt.Errorf("failed to remove stale item: %w", err)
 		}
@@ -668,9 +734,10 @@ func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags ui
 		return nil
 	}
 	// BackOtter: what the restore finds in its way loses the flags that
-	// would refuse its getting entries, metadata or being replaced
-	// (fs.ClearRestrictingFlags); the late flags pass sets the node's.
-	fs.ClearRestrictingFlags(target)
+	// would refuse its getting entries, metadata or being replaced, where
+	// the node says what they are (clearRestrictingFlags); the late flags
+	// pass sets the node's.
+	res.clearRestrictingFlags(node, target)
 	// Linux is the only system with either (fs.PrepareDirForOptions).
 	if !fs.HasDirFlagsBeforeEntries() {
 		return res.ensureDir(target)
@@ -690,9 +757,15 @@ func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags ui
 			return nil
 		}
 	}
-	err = prepareDirForFlags(target, flags)
-	prepareDirForOptions(target, node, res.XattrSelectFilter)
-	return err
+	// A node without flags in a snapshot not from BackOtter says nothing
+	// about casefolding: the directory keeps what it inherited, as in stock
+	// restic (nodeFlagsKnown).
+	var prepErr error
+	if res.nodeFlagsKnown(node) {
+		prepErr = prepareDirForFlags(target, flags)
+	}
+	prepareDirForOptions(target, node, res.XattrSelectFilter, res.sn.FromBackOtter())
+	return prepErr
 }
 
 // pendingDir is a directory that isn't selected for the restore, but may
@@ -722,6 +795,59 @@ func (res *Restorer) ensureParents() error {
 	return nil
 }
 
+// targetNode returns the node whose metadata the target directory dst gets:
+// TargetNode, the subfolder's own node when restoring "ID:subfolder", but
+// only when dst is new: the restore creates it (nothing is there, which
+// MkdirAll and ensureDir create), or it is an empty directory, where one
+// holding only "lost+found" counts as empty (a new file system's root,
+// BackOtter's case).  Anything else at dst (a directory with entries, such
+// as /tmp or /srv) keeps its owner, mode, times, extended attributes, ACLs
+// and flags, as in stock restic, which never gives the target metadata.
+// nil when dst keeps its own.
+func (res *Restorer) targetNode(dst string) *data.Node {
+	if res.TargetNode == nil {
+		return nil
+	}
+	fi, err := fs.Lstat(dst)
+	if errors.Is(err, os.ErrNotExist) {
+		return res.TargetNode
+	}
+	if err != nil || !fi.IsDir() {
+		return nil
+	}
+	if empty, err := emptyTarget(dst); err != nil || !empty {
+		debug.Log("target %v keeps its metadata: not empty (%v)", dst, err)
+		return nil
+	}
+	return res.TargetNode
+}
+
+// emptyTarget tells whether the directory dst is empty but for a
+// "lost+found" directory.
+func emptyTarget(dst string) (bool, error) {
+	f, err := fs.Local{}.OpenFile(dst, fs.O_RDONLY|fs.O_DIRECTORY|fs.O_NOFOLLOW, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	names, err := f.Readdirnames(3)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	switch len(names) {
+	case 0:
+		return true, nil
+	case 1:
+		if names[0] != "lost+found" {
+			return false, nil
+		}
+		fi, err := fs.Lstat(filepath.Join(dst, names[0]))
+		return err == nil && fi.IsDir(), nil
+	default:
+		return false, nil
+	}
+}
+
 // RestoreTo creates the directories and files in the snapshot below dst.
 // Before an item is created, res.Filter is called.
 func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) {
@@ -733,6 +859,10 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 			return restoredFileCount, errors.Wrap(err, "Abs")
 		}
 	}
+
+	// BackOtter: the target of "ID:subfolder" gets the subfolder's own
+	// metadata only if it is new (targetNode).
+	targetNode := res.targetNode(dst)
 
 	if !res.opts.DryRun {
 		// ensure that the target directory exists and is actually a directory
@@ -760,13 +890,13 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				res.opts.Progress.AddFile(0)
 			}
 			if node == nil {
-				// The target itself: when restoring "ID:subfolder", it
-				// has the subfolder's node, and gets its casefolding
-				// while empty, as any other directory.
-				if res.TargetNode == nil {
+				// The target itself: when restoring "ID:subfolder" into
+				// a new target, it has the subfolder's node, and gets
+				// its casefolding while empty, as any other directory.
+				if targetNode == nil {
 					return res.ensureDir(target)
 				}
-				node = res.TargetNode
+				node = targetNode
 			} else if err := res.ensureParents(); err != nil {
 				return err
 			}
@@ -802,20 +932,14 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				// BackOtter: a file in the way loses the flags that
 				// would refuse its being rewritten, replaced or given
 				// its metadata (immutable, append-only, undeletable),
-				// as in rustic-bko; the late flags pass sets the
-				// node's.
+				// where its node says what they are, as in rustic-bko;
+				// the late flags pass sets the node's.
 				if !res.opts.DryRun {
-					fs.ClearRestrictingFlags(target)
+					res.clearRestrictingFlags(node, target)
 				}
 				unread := res.warnUnread(node, location)
 				if updateMetadataOnly {
-					res.opts.Progress.AddSkippedFile(location, node.Size)
-					// BackOtter: a file whose contents are right, but
-					// that should be fully allocated, gets its holes
-					// filled (a swap file from an interrupted restore).
-					if !res.opts.DryRun && !res.opts.Sparse && !sparse {
-						fs.FillHoles(target, int64(node.Size))
-					}
+					res.metadataOnly(node, target, location, sparse)
 				} else {
 					res.opts.Progress.AddFile(node.Size)
 					if !res.opts.DryRun && unread {
@@ -915,12 +1039,13 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 
 			if node == nil {
 				// The target itself: it gets the subfolder's metadata
-				// when restoring "ID:subfolder", and is left as it is
-				// for a whole snapshot, which has no node of its own.
-				if res.TargetNode == nil {
+				// when restoring "ID:subfolder" into a new target, and
+				// is left as it is otherwise, as for a whole snapshot,
+				// which has no node of its own.
+				if targetNode == nil {
 					return nil
 				}
-				return res.restoreNodeMetadataTo(res.TargetNode, target, location)
+				return res.restoreNodeMetadataTo(targetNode, target, location)
 			}
 
 			err := res.restoreNodeMetadataTo(node, target, location)
@@ -989,11 +1114,6 @@ func (res *Restorer) removeUnexpectedFiles(ctx context.Context, target, location
 			}
 
 			if !res.opts.DryRun {
-				// BackOtter: flags that refuse removal come off
-				// first, outermost first.
-				for _, path := range filesToDelete {
-					fs.ClearRestrictingFlags(path)
-				}
 				// Perform the deletion
 				if err := fs.RemoveAll(nodeTarget); err != nil {
 					return err

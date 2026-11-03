@@ -142,36 +142,46 @@ func nodeFillOSAttributes(_ *data.Node, _ string, _ *ExtendedFileInfo) error {
 // symlink, FIFO, socket or device can't be opened for FS_IOC_FSSETXATTR
 // without following it or side effects.  A file system without project IDs
 // gives an *UnsupportedError, a malformed one a
-// data.MalformedAttributeError, for the restorer to warn about.  On
-// bcachefs a file without one gets 0, where it inherited another from its
-// directory (whose project ID the restore gives it before its entries,
-// PrepareDirForOptions); elsewhere a project ID of 0 is left as it is.
+// data.MalformedAttributeError, for the restorer to warn about.  A node
+// without one leaves the file's as it is here; the restorer gives it 0 with
+// RestoreZeroProjectID where it knows the file had none (a snapshot from
+// BackOtter).
 func nodeRestoreOSAttributes(node *data.Node, path string) error {
 	id, ok, err := node.ProjectID()
 	if err != nil {
 		return err
 	}
-	if node.Type != data.NodeTypeFile && node.Type != data.NodeTypeDir {
-		return nil
-	}
-	if !ok && !isBcachefsPath(path) {
+	if !ok || node.Type != data.NodeTypeFile && node.Type != data.NodeTypeDir {
 		return nil
 	}
 	fd, err := openForFlags(path, node.Type, nil)
 	if err != nil {
-		if !ok {
-			debug.Log("project ID of %v not checked: %v", path, err)
-			return nil
-		}
 		return err
 	}
 	defer func() { _ = unix.Close(fd) }()
-	err = restoreProjectID(fd, path, id)
-	if err != nil && !ok {
-		debug.Log("project ID 0 not restored on %v: %v", path, err)
-		return nil
+	return restoreProjectID(fd, path, id)
+}
+
+// RestoreZeroProjectID gives the regular file or directory at path, of type
+// typ, whose node has no project ID in a snapshot that records every
+// project ID (BackOtter's), project ID 0, on bcachefs, where it may have
+// inherited another from its directory (bcachefs hands a directory's
+// project ID to the entries created in it, without FS_PROJINHERIT_FL);
+// elsewhere a file's project ID is left as it is.  Failures are only
+// logged: 0 is what a file system without project quotas has anyway.
+func RestoreZeroProjectID(path string, typ data.NodeType) {
+	if typ != data.NodeTypeFile && typ != data.NodeTypeDir || !isBcachefsPath(path) {
+		return
 	}
-	return err
+	fd, err := openForFlags(path, typ, nil)
+	if err != nil {
+		debug.Log("project ID of %v not checked: %v", path, err)
+		return
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if err := restoreProjectID(fd, path, 0); err != nil {
+		debug.Log("project ID 0 not restored on %v: %v", path, err)
+	}
 }
 
 // restoreProjectID gives the regular file or directory open as fd, at path,
@@ -215,12 +225,14 @@ func bcachefsOption(name string) bool {
 // just created or found empty, the options its node has that bcachefs
 // passes to the entries a directory gets after they are set: its own
 // bcachefs.* options (those xattrSelectFilter selects) and its project ID,
-// 0 where it has none.  Its entries then inherit them as in the original,
+// 0 where it has none and absentIsZero (a snapshot from BackOtter, which
+// records every project ID); without absentIsZero a node without one
+// leaves the directory the project ID it inherited, as in stock restic.  Its entries then inherit them as in the original,
 // so their data is stored as it was (compressed, replicated, on the same
 // targets) and their project ID comes back inherited.  Only on bcachefs;
 // errors are left for the directory's metadata, which sets them all again,
 // to report.
-func PrepareDirForOptions(path string, node *data.Node, xattrSelectFilter func(xattrName string) bool) {
+func PrepareDirForOptions(path string, node *data.Node, xattrSelectFilter func(xattrName string) bool, absentIsZero bool) {
 	if node == nil || node.Type != data.NodeTypeDir || !isBcachefsPath(path) {
 		return
 	}
@@ -238,8 +250,8 @@ func PrepareDirForOptions(path string, node *data.Node, xattrSelectFilter func(x
 			debug.Log("%v of %v not set early: %v", attr.Name, path, err)
 		}
 	}
-	id, _, err := node.ProjectID()
-	if err != nil {
+	id, ok, err := node.ProjectID()
+	if err != nil || !ok && !absentIsZero {
 		return
 	}
 	if err := restoreProjectID(fd, path, id); err != nil {

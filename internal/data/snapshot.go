@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,22 @@ type Snapshot struct {
 	Summary        *SnapshotSummary `json:"summary,omitempty"`
 
 	id *restic.ID // plaintext ID, used during restore
+}
+
+// BackOtterBuild is what the program version of a snapshot that restic-bko
+// or rustic-bko wrote contains: "restic 0.19.1+backotter.3", "rustic
+// v0.11.4+backotter.3".
+const BackOtterBuild = "+backotter"
+
+// FromBackOtter tells whether sn was written by restic-bko or rustic-bko,
+// whose nodes record every attribute they can (BackOtter).  In such a
+// snapshot an attribute a node lacks was zero or absent at backup (no file
+// flags, project ID 0); in any other (stock restic's, stock rustic's) it is
+// unknown, and a restore leaves what the target has, as stock restic does.
+// A snapshot that "rewrite" or "copy" made keeps the program version of the
+// one it came from.
+func (sn *Snapshot) FromBackOtter() bool {
+	return sn != nil && strings.Contains(sn.ProgramVersion, BackOtterBuild)
 }
 
 type SnapshotSummary struct {
