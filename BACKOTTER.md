@@ -153,8 +153,13 @@ new restic release rather than merged.
   (flags, a non-trivial ACL, a project ID, holes), so trees of ordinary
   files are what stock restic writes, except that atimes are real (see
   below), files with holes carry `unix.sparse`, and on FreeBSD, NetBSD and
-  illumos every file its birth time; on other systems, with
-  `--with-atime=false` and no holes, they are byte-for-byte.
+  illumos every file its birth time.  On other systems, with
+  `--with-atime=false` and no holes, they are what stock restic writes
+  with `RESTIC_FEATURES=device-id-for-hardlinks=true` (by default it
+  stores a device ID on every node: see below), save that extended
+  attributes come in the order of their names (stock restic keeps the
+  order the system lists them in) and a node without a link count (a FIFO)
+  has no device ID.
 - On restore, ACLs are set after the mode, which rewrites NFSv4 ACLs, and
   flags after everything else (contents, hard links, ownership, xattrs,
   timestamps, mode, ACLs), once per hard-linked file, since an immutable or
