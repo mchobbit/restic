@@ -372,8 +372,14 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
     they hold; FreeBSD UFS's `.sujournal` regular file (newfs -j), of any
     size; and nilfs2's `.nilfs`, an empty regular file (size 0), which
     mkfs.nilfs2 2.0.0 to 2.2.9 make (Ubuntu 24.04, Zorin 18; 2.2.10 and
-    later make none).  vfat, jfs, f2fs, xfs, btrfs, ZFS (whose `.zfs` is
-    hidden), NetBSD, OpenBSD and DragonFly UFS and HAMMER2 make none;
+    later make none).  vfat (Linux's mkfs.fat, and the BSDs'
+    newfs_msdos, whose volume label entry is never listed), jfs, f2fs,
+    xfs, btrfs, ZFS, NetBSD, OpenBSD and DragonFly UFS, HAMMER2 and
+    Haiku's BFS (rustic-bko only) make none.  Not on the list, so not
+    fresh: a new nilfs2 made by mkfs.nilfs2 before 2.0.22 (2010), whose
+    root also holds an empty regular file `.sketch`, and a ZFS dataset
+    with `snapdir=visible`, whose root lists its `.zfs` directory (with
+    the default, `snapdir=hidden`, it lists nothing);
   - a mount point: a directory whose device (`st_dev`) differs from its
     parent's, walked into with the same rule.  On Linux every btrfs
     subvolume (mounted or not) and every ZFS dataset has a device of its
