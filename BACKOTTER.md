@@ -361,16 +361,29 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
   metadata (owner, mode, times, extended attributes, ACLs, flags), as it
   does everything below it, when the restore creates the target or finds it
   fresh: a new file system's root, BackOtter's case.  The target is fresh
-  when walking it (never following symbolic links, but into the file
-  systems mounted below it) finds only directories, each of them empty or
-  holding only directories and the entries a file system is made with: a
-  `lost+found` directory (mkfs, newfs), and FreeBSD UFS's `.snap`
-  directory and `.sujournal` file (newfs, newfs -j); what these hold is not
-  looked at.  So a bare-metal restore's root still gets the node's
-  metadata with the other new file systems mounted below it (`/boot`,
-  `/boot/efi`, `/home`, ZFS datasets, btrfs subvolumes, and the plain
-  directories their mount points are in).  An empty directory is fresh;
-  more than 4096 directories is not.  rustic-bko follows the same rule.
+  when it holds nothing but what file systems are made with and other
+  file systems mounted below it: every entry walking it finds (never
+  following symbolic links) is one of
+  - an entry a file system is made with, in any directory, whatever it
+    holds: a `lost+found` directory (mkfs, newfs), FreeBSD UFS's `.snap`
+    directory and `.sujournal` regular file (newfs, newfs -j);
+  - a mount point: a directory whose device (`st_dev`) differs from its
+    parent's, walked into with the same rule.  On Linux every btrfs
+    subvolume (mounted or not) and every ZFS dataset has a device of its
+    own, as every mounted file system has elsewhere;
+  - a directory on the path to a mount point: one that holds, at some
+    depth, only such entries and at least one mount point (`var/` and
+    `var/lib/` above a `var/lib/portables` subvolume).
+
+  So a bare-metal restore's root still gets the node's metadata with the
+  other new file systems mounted below it (`/boot`, `/boot/efi`, `/home`,
+  ZFS datasets, btrfs subvolumes).  A plain directory on the target's own
+  file system that leads to no mount point, even an empty one, makes it
+  not fresh: a freshly booted system's `/tmp`, holding only empty
+  `.X11-unix`, `.ICE-unix` and `systemd-private-*/tmp` directories, keeps
+  its sticky bit, owner, xattrs and ACLs.  An empty target is fresh; one
+  with more than 4096 directories is not.  rustic-bko follows the same
+  rule.
   Stock restic leaves the target as it was, so a restored file system's
   root kept mkfs's mode and had no SELinux label.  A target with anything
   else anywhere below it (a file, a symbolic link: `/tmp`, `/srv`) is left

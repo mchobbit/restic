@@ -729,11 +729,14 @@ func TestRestorerXFSOptions(t *testing.T) {
 
 // A bare-metal restore's target has the other new file systems mounted
 // below it before "ID:subfolder" is restored into it: it is still fresh,
-// and gets the subfolder's metadata, through a mount point holding a
-// lost+found; a file in the mounted file system makes it not fresh (A3).
+// and gets the subfolder's metadata, when it holds only what mkfs makes
+// (a real ext4's lost+found), mount points (st_dev differs from the
+// parent's) and the plain directories on the path to them.  A file
+// anywhere, or a plain directory that leads to no mount point, even an
+// empty one on a mounted file system, makes it not fresh (A3).
 func TestRestorerTargetNodeMountedBelow(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("mounting a tmpfs needs root")
+		t.Skip("mounting file systems needs root")
 	}
 	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
 	repo := repository.TestRepository(t)
@@ -752,37 +755,84 @@ func TestRestorerTargetNodeMountedBelow(t *testing.T) {
 	sub := *sn
 	sub.Tree = subtree
 
-	for _, withFile := range []bool{false, true} {
-		target := rtest.TempDir(t)
-		rtest.OK(t, os.Chmod(target, 0755))
-		mp := filepath.Join(target, "boot", "efi")
+	// mount mounts a tmpfs at target/rel, making the directories to it
+	mount := func(t *testing.T, target, rel string) string {
+		mp := filepath.Join(target, rel)
 		rtest.OK(t, os.MkdirAll(mp, 0755))
 		rtest.OK(t, unix.Mount("tmpfs", mp, "tmpfs", 0, "size=1m"))
 		t.Cleanup(func() { _ = unix.Unmount(mp, unix.MNT_DETACH) })
-		rtest.OK(t, os.Mkdir(filepath.Join(mp, "lost+found"), 0700))
-		if withFile {
-			rtest.OK(t, os.WriteFile(filepath.Join(mp, "EFI"), nil, 0644))
-		}
 		var st, pst unix.Stat_t
 		rtest.OK(t, unix.Lstat(mp, &st))
 		rtest.OK(t, unix.Lstat(filepath.Dir(mp), &pst))
 		rtest.Assert(t, st.Dev != pst.Dev, "%v is not a mount point", mp)
+		return mp
+	}
+	// boot mounts boot and boot/efi, each with a lost+found
+	boot := func(t *testing.T, target string) {
+		rtest.OK(t, os.Mkdir(filepath.Join(mount(t, target, "boot"), "lost+found"), 0700))
+		rtest.OK(t, os.Mkdir(filepath.Join(mount(t, target, "boot/efi"), "lost+found"), 0700))
+	}
+	for _, test := range []struct {
+		name    string
+		ext4    bool // the target is a new ext4, with its lost+found
+		prepare func(t *testing.T, target string)
+		fresh   bool
+	}{
+		{"ext4 lost+found", true, func(*testing.T, string) {}, true},
+		{"ext4 boot and boot/efi", true, boot, true},
+		{"boot and boot/efi", false, boot, true},
+		{"path to a mount point", false, func(t *testing.T, target string) {
+			mount(t, target, "var/lib/portables")
+			mount(t, target, "home")
+		}, true},
+		{"file in a mounted file system", false, func(t *testing.T, target string) {
+			boot(t, target)
+			rtest.OK(t, os.WriteFile(filepath.Join(target, "boot", "efi", "EFI"), nil, 0644))
+		}, false},
+		{"file beside a mount point", true, func(t *testing.T, target string) {
+			boot(t, target)
+			rtest.OK(t, os.WriteFile(filepath.Join(target, "boot.cfg"), nil, 0644))
+		}, false},
+		{"empty directory in a mounted file system", false, func(t *testing.T, target string) {
+			boot(t, target)
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "boot", "grub"), 0755))
+		}, false},
+		{"empty directory beside a mount point", true, func(t *testing.T, target string) {
+			boot(t, target)
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "srv"), 0755))
+		}, false},
+		{"empty directory on the path to a mount point", false, func(t *testing.T, target string) {
+			mount(t, target, "var/lib/portables")
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "var", "tmp"), 0755))
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var target string
+			if test.ext4 {
+				target = mountLoopFS(t, 32<<20, "mkfs.ext4", "-q")
+				_, err := os.Stat(filepath.Join(target, "lost+found"))
+				rtest.OK(t, err)
+			} else {
+				target = rtest.TempDir(t)
+			}
+			rtest.OK(t, os.Chmod(target, 0755))
+			test.prepare(t, target)
 
-		res := NewRestorer(repo, &sub, Options{})
-		res.TargetNode = dirNode
-		_, err = res.RestoreTo(ctx, target)
-		rtest.OK(t, err)
+			res := NewRestorer(repo, &sub, Options{})
+			res.TargetNode = dirNode
+			_, err := res.RestoreTo(ctx, target)
+			rtest.OK(t, err)
 
-		f, err := os.Stat(target)
-		rtest.OK(t, err)
-		if withFile {
-			rtest.Equals(t, os.FileMode(0755)|os.ModeDir, f.Mode())
-			rtest.Assert(t, !f.ModTime().Equal(timeForTest), "target with a file got the node's mtime")
-		} else {
-			checkConsistentInfo(t, "mounted below", f, timeForTest, normalizeFileMode(0750|os.ModeDir))
-		}
-		_, err = os.Stat(filepath.Join(mp, "lost+found"))
-		rtest.OK(t, err)
-		rtest.OK(t, unix.Unmount(mp, 0))
+			f, err := os.Stat(target)
+			rtest.OK(t, err)
+			if test.fresh {
+				checkConsistentInfo(t, test.name, f, timeForTest, normalizeFileMode(0750|os.ModeDir))
+			} else {
+				rtest.Equals(t, os.FileMode(0755)|os.ModeDir, f.Mode())
+				rtest.Assert(t, !f.ModTime().Equal(timeForTest), "target that is not fresh got the node's mtime")
+			}
+			_, err = os.Stat(filepath.Join(target, "file"))
+			rtest.OK(t, err)
+		})
 	}
 }

@@ -861,11 +861,12 @@ func TestRestorerConsistentTimestampsAndPermissions(t *testing.T) {
 }
 
 // Restoring "ID:subfolder" gives the target directory the subfolder's own
-// metadata when the restore creates it or finds it fresh (only directories,
-// and what mkfs makes, such as a "lost+found" directory: a new file system's
-// root, with others mounted below it); a target with files or other entries,
-// and any target restored without the node, is left as it was, as in stock
-// restic.
+// metadata when the restore creates it or finds it fresh (holding only what
+// mkfs makes, such as a "lost+found" directory, and other file systems
+// mounted below it: TestRestorerTargetNodeMountedBelow); a target with
+// files, other entries or a plain directory, even an empty one (a freshly
+// booted system's /tmp), and any target restored without the node, is left
+// as it was, as in stock restic.
 func TestRestorerTargetNodeMetadata(t *testing.T) {
 	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
 	repo := repository.TestRepository(t)
@@ -907,18 +908,36 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 			rtest.OK(t, os.Mkdir(target, 0755))
 			rtest.OK(t, os.WriteFile(filepath.Join(target, "lost+found"), nil, 0644))
 		}, false},
-		// the mount points of a bare-metal restore's other file systems,
-		// and the directories they are in, each with what mkfs/newfs made
-		{"directories", func(target string) {
-			rtest.OK(t, os.MkdirAll(filepath.Join(target, "boot", "efi"), 0755))
-			rtest.OK(t, os.Mkdir(filepath.Join(target, "boot", "lost+found"), 0700))
-			rtest.OK(t, os.MkdirAll(filepath.Join(target, "var", "lib", "portables"), 0755))
-			rtest.OK(t, os.Mkdir(filepath.Join(target, "home"), 0755))
-			rtest.OK(t, os.Mkdir(filepath.Join(target, "home", ".snap"), 0775))
-			rtest.OK(t, os.WriteFile(filepath.Join(target, "home", ".sujournal"), nil, 0400))
+		// what newfs makes, whatever lost+found holds
+		{"mkfs entries", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, ".snap"), 0775))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".sujournal"), nil, 0400))
 			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))
 			rtest.OK(t, os.WriteFile(filepath.Join(target, "lost+found", "#12"), nil, 0644))
 		}, true},
+		// a freshly booted system's /tmp: only empty directories, on the
+		// target's own file system (no mount point below)
+		{"tmp", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Chmod(target, 0777|os.ModeSticky))
+			for _, dir := range []string{".X11-unix", ".ICE-unix", ".font-unix", "systemd-private-0123-chronyd.service-AbCdEf/tmp"} {
+				rtest.OK(t, os.MkdirAll(filepath.Join(target, dir), 0700))
+			}
+		}, false},
+		{"empty directory", func(target string) {
+			rtest.OK(t, os.MkdirAll(filepath.Join(target, "boot"), 0755))
+		}, false},
+		// directories where mount points would be, but not mounted
+		{"plain directories", func(target string) {
+			rtest.OK(t, os.MkdirAll(filepath.Join(target, "boot", "efi"), 0755))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "boot", "lost+found"), 0700))
+			rtest.OK(t, os.MkdirAll(filepath.Join(target, "var", "lib", "portables"), 0755))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))
+		}, false},
+		{"lost+found in a directory", func(target string) {
+			rtest.OK(t, os.MkdirAll(filepath.Join(target, "home", "lost+found"), 0755))
+		}, false},
 		{"nested file", func(target string) {
 			rtest.OK(t, os.MkdirAll(filepath.Join(target, "boot", "efi"), 0755))
 			rtest.OK(t, os.WriteFile(filepath.Join(target, "boot", "efi", "x"), nil, 0644))

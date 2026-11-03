@@ -56,8 +56,8 @@ type Restorer struct {
 	// TargetNode, when restoring a subfolder of a snapshot ("ID:subfolder"),
 	// is the subfolder's own node, whose metadata the target directory gets
 	// when the restore creates it or finds it fresh (freshTarget: holding
-	// only directories, with file systems mounted below it, and the entries
-	// mkfs makes, such as lost+found): the root of a new file system would
+	// only the entries mkfs makes, such as lost+found, and file systems
+	// mounted below it): the root of a new file system would
 	// otherwise keep mkfs's defaults and no SELinux label.  A target with
 	// files or other entries keeps its own owner,
 	// mode, timestamps, extended attributes and flags, as in stock restic
@@ -398,7 +398,8 @@ func (res *Restorer) clearRestrictingFlags(node *data.Node, target string) {
 // about holes: such a file keeps them, as in stock restic.  Only a file
 // whose lstat shows holes is opened at all.  It is reported as updated when
 // it got blocks (or, with --dry-run, would get them), else as unchanged; a
-// failure is a warning.
+// failure is a warning, and a file that got blocks all the same (a partial
+// fill before ENOSPC) is reported as updated.
 func (res *Restorer) metadataOnly(node *data.Node, target, location string, sparse bool) {
 	if res.opts.Sparse || sparse || !res.sn.FromBackOtter() || node.Size == 0 {
 		res.opts.Progress.AddSkippedFile(location, node.Size)
@@ -803,7 +804,8 @@ func (res *Restorer) ensureParents() error {
 // MkdirAll and ensureDir create), or it is a fresh directory (freshTarget):
 // the root of a new file system, maybe with the new file systems of a
 // bare-metal restore mounted below it, BackOtter's case.  Anything else at
-// dst (a directory with files, such as /tmp or /srv) keeps its owner, mode,
+// dst (a directory with files or plain directories, such as /tmp or /srv)
+// keeps its owner, mode,
 // times, extended attributes, ACLs and flags, as in stock restic, which
 // never gives the target metadata.  nil when dst keeps its own.
 func (res *Restorer) targetNode(dst string) *data.Node {
@@ -828,52 +830,81 @@ func (res *Restorer) targetNode(dst string) *data.Node {
 // with more is not taken for fresh.
 const freshTargetMaxDirs = 4096
 
-// freshTarget tells whether the directory dst holds nothing a restore could
-// be said to restore over: walking it (never following symbolic links, but
-// into the file systems mounted below it) finds only directories, each of
-// them empty or holding only directories and the entries a file system is
-// made with (fileSystemMadeEntry).  A bare-metal restore's target is the
-// new root file system with the others mounted below it before the restore
-// (/boot, /boot/efi, /home, ZFS datasets, btrfs subvolumes, with the
-// directories their mount points are in), where each holds at most its
-// lost+found, or UFS's .snap and .sujournal.  An empty directory is fresh.
+// freshTarget tells whether the directory dst is a fresh target: the root
+// of a new file system, maybe with the other new file systems of a
+// bare-metal restore mounted below it (/boot, /boot/efi, /home, ZFS
+// datasets, btrfs subvolumes), BackOtter's case.  dst is fresh when every
+// entry walking it finds (never following symbolic links) is
+//
+//   - one a new file system is made with (fileSystemMadeEntry: lost+found,
+//     UFS's .snap and .sujournal), in any directory, whatever it holds;
+//   - a mount point: a directory whose device (st_dev) differs from its
+//     parent's, walked with the same rule relative to it.  On Linux every
+//     btrfs subvolume (mounted or not) and every ZFS dataset has a device
+//     of its own; elsewhere each mounted file system has;
+//   - a directory on the path to a mount point: one holding, at some
+//     depth, only such entries and at least one mount point.
+//
+// So a plain directory on dst's own file system that leads to no mount
+// point, even an empty one, makes dst not fresh: a freshly booted system's
+// /tmp, holding only empty .X11-unix, .ICE-unix and systemd-private-*/tmp
+// directories, keeps its sticky bit, owner, xattrs and ACLs, as in stock
+// restic.  An empty dst is fresh; one with more than freshTargetMaxDirs
+// directories is not.
 func freshTarget(dst string) (bool, error) {
+	fi, err := fs.Lstat(dst)
+	if err != nil {
+		return false, err
+	}
 	budget := freshTargetMaxDirs
-	return freshDir(dst, &budget)
+	fresh, _, err := freshDir(dst, fs.ExtendedStat(fi).DeviceID, &budget)
+	return fresh, err
 }
 
-func freshDir(dir string, budget *int) (bool, error) {
+// freshDir walks the directory dir, on device dev, for freshTarget: fresh
+// tells whether every entry in it is a file-system-made entry, a mount
+// point that is fresh itself, or a directory on the path to one;
+// mounts whether it holds a mount point at some depth.
+func freshDir(dir string, dev uint64, budget *int) (fresh, mounts bool, err error) {
 	*budget--
 	if *budget < 0 {
-		return false, nil
+		return false, false, nil
 	}
 	f, err := fs.Local{}.OpenFile(dir, fs.O_RDONLY|fs.O_DIRECTORY|fs.O_NOFOLLOW, false)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer func() { _ = f.Close() }()
 	for {
 		names, err := f.Readdirnames(64)
 		for _, name := range names {
-			fi, lerr := fs.Lstat(filepath.Join(dir, name))
+			path := filepath.Join(dir, name)
+			fi, lerr := fs.Lstat(path)
 			if lerr != nil {
-				return false, lerr
+				return false, false, lerr
 			}
-			switch {
-			case fileSystemMadeEntry(name, fi):
-			case fi.IsDir():
-				if fresh, err := freshDir(filepath.Join(dir, name), budget); err != nil || !fresh {
-					return false, err
-				}
-			default:
-				return false, nil
+			if fileSystemMadeEntry(name, fi) {
+				continue
 			}
+			if !fi.IsDir() {
+				return false, false, nil
+			}
+			childDev := fs.ExtendedStat(fi).DeviceID
+			fresh, below, err := freshDir(path, childDev, budget)
+			if err != nil || !fresh {
+				return false, false, err
+			}
+			if childDev == dev && !below {
+				// a plain directory that leads to no mount point
+				return false, false, nil
+			}
+			mounts = true
 		}
 		if errors.Is(err, io.EOF) || err == nil && len(names) == 0 {
-			return true, nil
+			return true, mounts, nil
 		}
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 }
