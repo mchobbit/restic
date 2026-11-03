@@ -785,6 +785,17 @@ func TestRestorerTargetNodeMountedBelow(t *testing.T) {
 			mount(t, target, "var/lib/portables")
 			mount(t, target, "home")
 		}, true},
+		// a new nilfs2 root (mkfs.nilfs2 up to 2.2.9 makes an empty .nilfs)
+		// with boot and boot/efi mounted below, and a nilfs2 /home
+		{"nilfs2 .nilfs and mount points", false, func(t *testing.T, target string) {
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".nilfs"), nil, 0644))
+			boot(t, target)
+			rtest.OK(t, os.WriteFile(filepath.Join(mount(t, target, "home"), ".nilfs"), nil, 0644))
+		}, true},
+		{".nilfs with content beside a mount point", false, func(t *testing.T, target string) {
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".nilfs"), []byte("x"), 0644))
+			boot(t, target)
+		}, false},
 		{"file in a mounted file system", false, func(t *testing.T, target string) {
 			boot(t, target)
 			rtest.OK(t, os.WriteFile(filepath.Join(target, "boot", "efi", "EFI"), nil, 0644))

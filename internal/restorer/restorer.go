@@ -839,7 +839,8 @@ const freshTargetMaxDirs = 4096
 // entry walking it finds (never following symbolic links) is
 //
 //   - one a new file system is made with (fileSystemMadeEntry: lost+found,
-//     UFS's .snap and .sujournal), in any directory, whatever it holds;
+//     UFS's .snap and .sujournal, nilfs2's empty .nilfs), in any
+//     directory, whatever a directory of them holds;
 //   - a mount point: a directory whose device (st_dev) differs from its
 //     parent's, walked with the same rule relative to it.  On Linux every
 //     btrfs subvolume (mounted or not) and every ZFS dataset has a device
@@ -930,16 +931,22 @@ func sharedDir(fi os.FileInfo) bool {
 	return fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o002 != 0
 }
 
-// fileSystemMadeEntry tells whether the entry name, fi is one a new file
-// system is made with, whatever it holds: a "lost+found" directory (the
-// ext2/3/4 family's mkfs, UFS's newfs), and FreeBSD UFS's ".snap" directory
-// and ".sujournal" file (newfs, newfs -j).
+// fileSystemMadeEntry tells whether the entry name, fi (from lstat) is one
+// a new file system is made with: a "lost+found" directory (the ext2/3/4
+// family's mkfs, bcachefs format, illumos UFS's newfs) and FreeBSD UFS's
+// ".snap" directory (newfs), whatever they hold; FreeBSD UFS's
+// ".sujournal" regular file (newfs -j), whatever its size; and nilfs2's
+// ".nilfs", an empty regular file (mkfs.nilfs2 2.0.0 to 2.2.9, as in
+// Ubuntu 24.04; 2.2.10 and later make none).  rustic-bko keeps the same
+// list (made_by_file_system).
 func fileSystemMadeEntry(name string, fi os.FileInfo) bool {
 	switch name {
 	case "lost+found", ".snap":
 		return fi.IsDir()
 	case ".sujournal":
 		return fi.Mode().IsRegular()
+	case ".nilfs":
+		return fi.Mode().IsRegular() && fi.Size() == 0
 	}
 	return false
 }

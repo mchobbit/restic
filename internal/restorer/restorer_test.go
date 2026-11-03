@@ -862,7 +862,8 @@ func TestRestorerConsistentTimestampsAndPermissions(t *testing.T) {
 
 // Restoring "ID:subfolder" gives the target directory the subfolder's own
 // metadata when the restore creates it or finds it fresh (holding only what
-// mkfs makes, such as a "lost+found" directory, and other file systems
+// mkfs makes, such as a "lost+found" directory or nilfs2's empty ".nilfs"
+// file, and other file systems
 // mounted below it: TestRestorerTargetNodeMountedBelow); a target with
 // files, other entries or a plain directory, even an empty one (a freshly
 // booted system's /tmp), a shared one (sticky bit or write permission for
@@ -968,6 +969,30 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 		{".snap file", func(target string) {
 			rtest.OK(t, os.Mkdir(target, 0755))
 			rtest.OK(t, os.WriteFile(filepath.Join(target, ".snap"), nil, 0644))
+		}, false},
+		// a new nilfs2's root: mkfs.nilfs2 up to 2.2.9 makes an empty .nilfs
+		{".nilfs", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".nilfs"), nil, 0644))
+		}, true},
+		{".nilfs and lost+found", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".nilfs"), nil, 0644))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))
+		}, true},
+		{".nilfs with content", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.WriteFile(filepath.Join(target, ".nilfs"), []byte("x"), 0644))
+		}, false},
+		{".nilfs directory", func(target string) {
+			rtest.OK(t, os.MkdirAll(filepath.Join(target, ".nilfs"), 0755))
+		}, false},
+		// a symbolic link to an empty file elsewhere is not followed
+		{".nilfs symlink", func(target string) {
+			empty := filepath.Join(rtest.TempDir(t), "empty")
+			rtest.OK(t, os.WriteFile(empty, nil, 0644))
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Symlink(empty, filepath.Join(target, ".nilfs")))
 		}, false},
 	} {
 		for _, withNode := range []bool{true, false} {

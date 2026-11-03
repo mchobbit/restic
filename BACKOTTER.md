@@ -366,9 +366,14 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
   when it holds nothing but what file systems are made with and other
   file systems mounted below it: every entry walking it finds (never
   following symbolic links) is one of
-  - an entry a file system is made with, in any directory, whatever it
-    holds: a `lost+found` directory (mkfs, newfs), FreeBSD UFS's `.snap`
-    directory and `.sujournal` regular file (newfs, newfs -j);
+  - an entry a file system is made with, in any directory: a
+    `lost+found` directory (ext2/3/4's mkfs, bcachefs format, illumos
+    UFS's newfs) and FreeBSD UFS's `.snap` directory (newfs), whatever
+    they hold; FreeBSD UFS's `.sujournal` regular file (newfs -j), of any
+    size; and nilfs2's `.nilfs`, an empty regular file (size 0), which
+    mkfs.nilfs2 2.0.0 to 2.2.9 make (Ubuntu 24.04, Zorin 18; 2.2.10 and
+    later make none).  vfat, jfs, f2fs, xfs, btrfs, ZFS (whose `.zfs` is
+    hidden), NetBSD, OpenBSD and DragonFly UFS and HAMMER2 make none;
   - a mount point: a directory whose device (`st_dev`) differs from its
     parent's, walked into with the same rule.  On Linux every btrfs
     subvolume (mounted or not) and every ZFS dataset has a device of its
