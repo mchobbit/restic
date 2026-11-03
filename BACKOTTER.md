@@ -384,8 +384,13 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
   not fresh: a freshly booted system's `/tmp`, holding only empty
   `.X11-unix`, `.ICE-unix` and `systemd-private-*/tmp` directories, keeps
   its sticky bit, owner, xattrs and ACLs.  An empty target is fresh; one
-  with more than 4096 directories is not.  rustic-bko follows the same
-  rule.
+  with more than 4096 directories is not.  A shared target, one with the
+  sticky bit or write permission for others (`S_ISVTX`, `S_IWOTH`), is
+  never fresh, empty or not: an empty `/tmp` (in a container, on a minimal
+  system, a new tmpfs) or `/dev/shm` keeps its mode 1777, owner, xattrs
+  and ACLs.  mkfs, newfs, `zfs create` and `btrfs subvolume create` never
+  make such a root.  (Not on Windows, whose permission bits Go makes up.)
+  rustic-bko follows the same rule.
   Stock restic leaves the target as it was, so a restored file system's
   root kept mkfs's mode and had no SELinux label.  A target with anything
   else anywhere below it (a file, a symbolic link: `/tmp`, `/srv`) is left

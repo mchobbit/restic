@@ -865,8 +865,9 @@ func TestRestorerConsistentTimestampsAndPermissions(t *testing.T) {
 // mkfs makes, such as a "lost+found" directory, and other file systems
 // mounted below it: TestRestorerTargetNodeMountedBelow); a target with
 // files, other entries or a plain directory, even an empty one (a freshly
-// booted system's /tmp), and any target restored without the node, is left
-// as it was, as in stock restic.
+// booted system's /tmp), a shared one (sticky bit or write permission for
+// others: an empty /tmp or /dev/shm), and any target restored without the
+// node, is left as it was, as in stock restic.
 func TestRestorerTargetNodeMetadata(t *testing.T) {
 	timeForTest := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
 	repo := repository.TestRepository(t)
@@ -896,6 +897,24 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 	}{
 		{"new", func(string) {}, true},
 		{"empty", func(target string) { rtest.OK(t, os.Mkdir(target, 0755)) }, true},
+		// an empty shared directory: /tmp in a container, /dev/shm
+		{"empty sticky", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Chmod(target, 0777|os.ModeSticky))
+		}, runtime.GOOS == "windows"},
+		{"empty world-writable", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Chmod(target, 0777))
+		}, runtime.GOOS == "windows"},
+		{"empty sticky only", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Chmod(target, 0755|os.ModeSticky))
+		}, runtime.GOOS == "windows"},
+		{"lost+found sticky", func(target string) {
+			rtest.OK(t, os.Mkdir(target, 0755))
+			rtest.OK(t, os.Chmod(target, 0777|os.ModeSticky))
+			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))
+		}, runtime.GOOS == "windows"},
 		{"lost+found", func(target string) {
 			rtest.OK(t, os.Mkdir(target, 0755))
 			rtest.OK(t, os.Mkdir(filepath.Join(target, "lost+found"), 0700))

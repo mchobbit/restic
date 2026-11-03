@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -804,10 +805,11 @@ func (res *Restorer) ensureParents() error {
 // MkdirAll and ensureDir create), or it is a fresh directory (freshTarget):
 // the root of a new file system, maybe with the new file systems of a
 // bare-metal restore mounted below it, BackOtter's case.  Anything else at
-// dst (a directory with files or plain directories, such as /tmp or /srv)
-// keeps its owner, mode,
-// times, extended attributes, ACLs and flags, as in stock restic, which
-// never gives the target metadata.  nil when dst keeps its own.
+// dst (a directory with files or plain directories, such as /tmp or /srv,
+// or a shared one with the sticky bit or write permission for others, such
+// as an empty /tmp or /dev/shm) keeps its owner, mode, times, extended
+// attributes, ACLs and flags, as in stock restic, which never gives the
+// target metadata.  nil when dst keeps its own.
 func (res *Restorer) targetNode(dst string) *data.Node {
 	if res.TargetNode == nil {
 		return nil
@@ -851,10 +853,18 @@ const freshTargetMaxDirs = 4096
 // directories, keeps its sticky bit, owner, xattrs and ACLs, as in stock
 // restic.  An empty dst is fresh; one with more than freshTargetMaxDirs
 // directories is not.
+//
+// A dst with the sticky bit or write permission for others (sharedDir) is
+// never fresh, empty or not: an empty /tmp or /dev/shm keeps its mode 1777,
+// owner, xattrs and ACLs, as in stock restic.  mkfs, newfs, zfs create and
+// btrfs subvolume create never make such a root.
 func freshTarget(dst string) (bool, error) {
 	fi, err := fs.Lstat(dst)
 	if err != nil {
 		return false, err
+	}
+	if sharedDir(fi) {
+		return false, nil
 	}
 	budget := freshTargetMaxDirs
 	fresh, _, err := freshDir(dst, fs.ExtendedStat(fi).DeviceID, &budget)
@@ -907,6 +917,17 @@ func freshDir(dir string, dev uint64, budget *int) (fresh, mounts bool, err erro
 			return false, false, err
 		}
 	}
+}
+
+// sharedDir tells whether the directory fi is one others share, which is
+// never a fresh target: it has the sticky bit or write permission for
+// others (S_ISVTX, S_IWOTH), as /tmp and /dev/shm have.  Not on Windows,
+// whose permission bits Go makes up (a writable directory is 0777).
+func sharedDir(fi os.FileInfo) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	return fi.Mode()&os.ModeSticky != 0 || fi.Mode().Perm()&0o002 != 0
 }
 
 // fileSystemMadeEntry tells whether the entry name, fi is one a new file
