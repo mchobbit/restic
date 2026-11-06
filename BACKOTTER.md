@@ -640,11 +640,14 @@ own addition, made after that plan with the sparse-file work (batch 3).
   (`ftruncate`): neither compresses what `fallocate` allocated, so a
   restore onto a compressing mount (`compress=zstd`) would need every
   file's full size, and might not fit where the source did (Omarchy: 13.4
-  GiB into a 14 GiB btrfs).  A NOCOW file isn't compressed anyway, and
-  gets its flag while it is still empty, before it is sized (see the file
-  flags above); bcachefs's no-copy-on-write is an inode option, not a file
-  flag, and it has no swap files.  The file still gets every byte, so it has no holes
-  either way.  An
+  GiB into a 14 GiB btrfs).  A NOCOW file isn't compressed anyway, and a
+  new one gets its flag while it is still empty, before it is sized (see
+  the file flags above); bcachefs's no-copy-on-write is an inode option,
+  not a file flag, and it has no swap files.  A new file still gets every
+  byte, so it has no holes either way; one written into keeps any hole
+  that a chunk of zeros didn't need writing over.  The local backend's
+  repository files (packs, indexes), which stock restic preallocates too,
+  are only sized there as well: encrypted, they don't compress anyway.  An
   existing file that is written into is truncated if it is longer, then
   preallocated the same way.  An existing file left as it is, because its
   contents are right, is preallocated on Linux if the snapshot is from
