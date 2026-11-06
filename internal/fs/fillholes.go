@@ -14,7 +14,10 @@ import (
 // that FillHoles can fill, by BackOtter's rule S3 (hasHoles): its lstat
 // shows fewer blocks than its size, and then, opened read-only, SEEK_HOLE
 // finds a hole (a file on a compressed file system has few blocks and no
-// holes).  Never on ZFS, where fallocate(2) allocates nothing.  It returns
+// holes).  Never on ZFS, where fallocate(2) allocates nothing, nor where
+// nothing is to be allocated (allocates: btrfs but for a NOCOW file,
+// bcachefs), so that such a file isn't opened for writing for nothing, nor
+// counted by --dry-run.  It returns
 // the lstat for FillHoles to check the file against.  An unchanged file
 // without holes is only lstat'ed; one with few blocks is opened read-only,
 // which gives no close-write event and no ETXTBSY.
@@ -38,7 +41,7 @@ func fileHoles(path string, size int64) (unix.Stat_t, bool) {
 		return st, false
 	}
 	dev := uint64(fst.Dev) //nolint:unconvert // uint32 on some architectures
-	if isOn(fd, dev, zfsSuperMagic) {
+	if isOn(fd, dev, zfsSuperMagic) || !allocates(fd) {
 		return st, false
 	}
 	return st, hasHoles(size, fst.Blocks, func() (int64, error) {

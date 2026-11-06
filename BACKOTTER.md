@@ -634,14 +634,26 @@ own addition, made after that plan with the sparse-file work (batch 3).
 - **S5 Dense restore.**  Every other file is fully allocated.  A new file is
   preallocated to its full length when it is first sized, where the OS can
   (Linux `fallocate(fd, 0, 0, size)`, macOS `F_PREALLOCATE`; elsewhere
-  nothing), and then every byte, zero chunks included, is written.  An
+  nothing), and then every byte, zero chunks included, is written.  Not on
+  btrfs, though, but for a no-copy-on-write file (`FS_NOCOW_FL`, `C`: a
+  swap file), and never on bcachefs, where the file is only sized
+  (`ftruncate`): neither compresses what `fallocate` allocated, so a
+  restore onto a compressing mount (`compress=zstd`) would need every
+  file's full size, and might not fit where the source did (Omarchy: 13.4
+  GiB into a 14 GiB btrfs).  A NOCOW file isn't compressed anyway, and
+  gets its flag while it is still empty, before it is sized (see the file
+  flags above); bcachefs's no-copy-on-write is an inode option, not a file
+  flag, and it has no swap files.  The file still gets every byte, so it has no holes
+  either way.  An
   existing file that is written into is truncated if it is longer, then
   preallocated the same way.  An existing file left as it is, because its
   contents are right, is preallocated on Linux if the snapshot is from
   BackOtter, the file is not restored sparse by S4's first condition
   (marked, or `--sparse`) and it has holes by S3 (its lstat shows
   `blocks*512 < size`, and then, opened read-only, SEEK_HOLE finds one;
-  never on ZFS, where `fallocate` allocates nothing): that fills the holes
+  never on ZFS, where `fallocate` allocates nothing, nor where nothing is
+  to be allocated, as above: btrfs but for a NOCOW file, bcachefs): that
+  fills the holes
   of a swap file left by an interrupted restore.  Only then is the file
   opened for writing, so an unchanged file gets no close-write event
   (Syncthing, indexers, antivirus) and a running program's file no

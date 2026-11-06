@@ -68,3 +68,26 @@ func TestFillHoles(t *testing.T) {
 	rtest.OK(t, err)
 	rtest.Assert(t, !filled, "a file without holes was filled")
 }
+
+// TestAllocatesType: btrfs allocates only a NOCOW file, bcachefs none, the
+// others every file (ZFS too: fileHoles leaves its holes alone).
+func TestAllocatesType(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		typ   uint32
+		nocow bool
+		want  bool
+	}{
+		{"btrfs", btrfsSuperMagic, false, false},
+		{"btrfs NOCOW", btrfsSuperMagic, true, true},
+		{"bcachefs", bcachefsSuperMagic, false, false},
+		{"bcachefs nocow", bcachefsSuperMagic, true, false},
+		{"ext4", 0xef53, false, true},
+		{"XFS", 0x58465342, false, true},
+		{"ZFS", zfsSuperMagic, false, true},
+	} {
+		if got := allocatesType(c.typ, func() bool { return c.nocow }); got != c.want {
+			t.Errorf("%v: allocates %v, want %v", c.name, got, c.want)
+		}
+	}
+}
