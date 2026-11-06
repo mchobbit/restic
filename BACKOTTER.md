@@ -812,3 +812,18 @@ copy of the tree, whatever `RESTIC_COMMIT` says:
     git rebase --onto vNEW vOLD backotter
     # set internal/global/global.go's Version to "NEW+backotter.1"
     git push --force-with-lease origin backotter
+
+## Upstream fixes between releases
+
+Bugfixes upstream has merged but not yet released are cherry-picked onto
+`backotter` with `git cherry-pick -x` (the message names the upstream
+commit) and bump the `+backotter.N` suffix only.  The next release's rebase
+drops them, since the tag already holds them.  Taken so far, onto v0.19.1:
+
+- 8baffc402: a truncated key or config file is an error, not a crash (#21977);
+  its test calls `OpenKey`, as 0.19.1 names it (upstream later made it `openKey`)
+- ba802d42b: the Swift backend's password is redacted in debug logs (#22007)
+- 9a0b9e0eb: too large `--keep-within*` durations are an error (#22163)
+- 9da3b87b0: forget locks its list of failed snapshot IDs (#22100)
+- bba1b6808: prune treats a failure to list pack files as fatal; its test
+  takes 0.19.1's nil counter and `&progress.NoopPrinter{}`
