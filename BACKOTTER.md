@@ -544,7 +544,7 @@ own addition, made after that plan with the sparse-file work (batch 3).
   atimes).  Progress then shows no total or ETA.  With the default (the
   mtime in the atime's place) the scan runs on every system, as in stock.  Files' atimes are those before the backup read them.
   Linux, with `O_NOATIME`, keeps its scan.  `rewrite` keeps the stored
-  atimes.  `restore --verify` reads
+  atimes, in both tools.  `restore --verify` reads
   the restored files with `O_NOATIME`, so it doesn't undo their atimes.
 - **S2 Ownership.**  Each tool keeps its stock default: restic restores
   files' numeric uid and gid, and `--ownership-by-name` gives them the IDs
@@ -744,15 +744,18 @@ own addition, made after that plan with the sparse-file work (batch 3).
   goes for their file flags.  ACLs and extended attributes the file system
   can't hold (`EOPNOTSUPP`/`ENOTSUP`; on illumos an NFSv4 ACL refused with
   `ENOSYS` too, by tmpfs and UFS) get one warning per file, naming each,
-  and the restore exits 0 as well.  Any
-  other failure (`EPERM`, `EDQUOT`, `EIO`, ...; but see S2 for a restore not
-  running as root) is an error, and restic
-  exits 1, while rustic-bko only warns about it and exits 0 (upstream
-  rustic's design).  That is the one exit-status difference left between
-  the tools.  A file whose contents can't be written (one that can't be
-  opened for writing) is an error in both: restic exits 1, and rustic-bko,
-  which panicked there, reports each such file once, restores everything
-  else, and exits 1.
+  and the restore exits 0 as well.  Any other failure (`EPERM`, `EDQUOT`,
+  `EIO`, ...; but see S2 for a restore not running as root) is an error,
+  and restic exits 1; rustic-bko warns about each and, as upstream rustic,
+  exits 0, unless given `--strict-exit` (`RUSTIC_STRICT_EXIT`,
+  `strict-exit = true` in `[global]`): then it counts the same failures,
+  special files it can't make and entries `--delete` can't remove
+  included, and exits 1 as well, as it exits 3 for an incomplete backup
+  and 130 when interrupted.  Without that option, the exit status is the
+  one difference left between the tools.  A file whose contents can't be
+  written (one that can't be opened for writing) is an error in both:
+  restic exits 1, and rustic-bko, which panicked there, reports each such
+  file once, restores everything else, and exits 1.
 - **S11 Opening files for metadata.**  Regular files and directories are
   opened with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_NOCTTY|O_CLOEXEC` (and
   `O_DIRECTORY` for directories) and checked with `fstat`: a file of another
