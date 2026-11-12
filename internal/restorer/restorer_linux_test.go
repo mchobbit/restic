@@ -774,6 +774,134 @@ func TestRestorerXFSOptionsOverExisting(t *testing.T) {
 	}
 }
 
+// xfsChattr runs xfs_io's chattr with attrs on path.
+func xfsChattr(t *testing.T, path, attrs string) {
+	t.Helper()
+	if out, err := exec.Command("xfs_io", "-c", "chattr "+attrs, path).CombinedOutput(); err != nil {
+		t.Fatalf("chattr %v %v: %v: %s", attrs, path, err, out)
+	}
+}
+
+// xfsOptionsSnapshot is a snapshot with dir, whose node has XFS options
+// (realtime inheritance, an extent size hint's inheritance and filestream,
+// with a 2 MiB hint), holding in and sub/f, and plain, whose node has none,
+// holding sub.
+func xfsOptionsSnapshot(t *testing.T) (*repository.Repository, *data.Snapshot) {
+	dir := &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{attributes: dir, Nodes: map[string]Node{
+				"in":  File{Data: "in"},
+				"sub": Dir{Nodes: map[string]Node{"f": File{Data: "f"}}},
+			}},
+			"plain": Dir{Nodes: map[string]Node{"sub": Dir{}}},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		dir: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":2097152,"xflags":20736}`)},
+	}))
+	return repo, sn
+}
+
+// With root, on a loop XFS: a restore that stops early (a cancelled
+// context, after the first pass) puts back the XFS options it took off the
+// directories that were there, also those of a directory whose node has
+// none (plain's realtime inheritance), which the snapshot can't give back.
+func TestRestorerXFSOptionsInterrupted(t *testing.T) {
+	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	repo, sn := xfsOptionsSnapshot(t)
+	dst := filepath.Join(mnt, "dst")
+	calls := 0
+	res := NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	res.SelectFilter = func(string, bool) (bool, bool) { calls++; return true, true }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	xfsChattr(t, filepath.Join(dst, "plain"), "+t")
+
+	// Cancelled on the first pass's last node.
+	ctx, cancel := context.WithCancel(context.TODO())
+	defer cancel()
+	n := 0
+	res = NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	res.SelectFilter = func(string, bool) (bool, bool) {
+		n++
+		if n == calls/2 {
+			cancel()
+		}
+		return true, true
+	}
+	_, err = res.RestoreTo(ctx, dst)
+	rtest.Assert(t, err != nil, "the interrupted restore returned no error")
+	for name, want := range map[string]uint64{"dir": 0x5100, "plain": 0x100} {
+		x, _ := xfsStat(t, filepath.Join(dst, name))
+		rtest.Assert(t, x == want, "after the interrupted restore %v: xflags %#x, want %#x", name, x, want)
+	}
+
+	// A full restore after it leaves plain's.
+	res = NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	_, err = res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	for name, want := range map[string]uint64{"dir": 0x5100, "dir/in": 0, "plain": 0x100, "plain/sub": 0} {
+		x, _ := xfsStat(t, filepath.Join(dst, name))
+		rtest.Assert(t, x == want, "after the re-run %v: xflags %#x, want %#x", name, x, want)
+	}
+}
+
+// With root, on a loop XFS: with --delete, a directory whose extra entry
+// can't be removed (immutable) fails, and the restore goes on (Error
+// returns nil): the directory still gets back its XFS options.
+func TestRestorerXFSOptionsDeleteFails(t *testing.T) {
+	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	repo, sn := xfsOptionsSnapshot(t)
+	dst := filepath.Join(mnt, "dst")
+	res := NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+
+	extra := filepath.Join(dst, "dir", "extra")
+	rtest.OK(t, os.WriteFile(extra, []byte("extra"), 0o600))
+	xfsChattr(t, extra, "+i")
+	t.Cleanup(func() { _ = exec.Command("xfs_io", "-c", "chattr -i", extra).Run() })
+	failed := 0
+	res = NewRestorer(repo, sn, Options{Delete: true})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	res.Error = func(location string, err error) error {
+		t.Logf("error %v: %v", location, err)
+		failed++
+		return nil
+	}
+	_, err = res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	rtest.Assert(t, failed > 0, "removing the immutable extra file didn't fail")
+	x, _ := xfsStat(t, filepath.Join(dst, "dir"))
+	rtest.Assert(t, x == 0x5100, "dir: xflags %#x, want 0x5100", x)
+}
+
+// With root, on a loop XFS: the target, which keeps its own metadata (a
+// whole snapshot, or one that isn't new), loses its XFS options while the
+// restore makes entries in it, as any directory that was there, so that
+// they inherit none of them, and gets them back at the end.
+func TestRestorerXFSOptionsTarget(t *testing.T) {
+	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	repo, sn := xfsOptionsSnapshot(t)
+	dst := filepath.Join(mnt, "dst")
+	rtest.OK(t, os.Mkdir(dst, 0o755))
+	rtest.OK(t, os.WriteFile(filepath.Join(dst, "keep"), []byte("keep"), 0o600))
+	rtest.OK(t, fs.RestoreXFSOptions(dst, data.NodeTypeDir, data.XFSOptions{ExtSize: 2 << 20, XFlags: 0x5100}))
+	res := NewRestorer(repo, sn, Options{})
+	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+	_, err := res.RestoreTo(context.TODO(), dst)
+	rtest.OK(t, err)
+	for name, want := range map[string]uint64{".": 0x5100, "dir": 0x5100, "dir/in": 0, "plain": 0, "plain/sub": 0} {
+		x, _ := xfsStat(t, filepath.Join(dst, name))
+		rtest.Assert(t, x == want, "%v: xflags %#x, want %#x", name, x, want)
+	}
+}
+
 // A bare-metal restore's target has the other new file systems mounted
 // below it before "ID:subfolder" is restored into it: it is still fresh,
 // and gets the subfolder's metadata, when it holds only what mkfs makes

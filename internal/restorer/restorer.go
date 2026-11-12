@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -40,9 +41,10 @@ type Restorer struct {
 	// selected entries (--include): see ensureParents.
 	pendingDirs []pendingDir
 	// clearedXFS are the directories, by target, whose XFS options came
-	// off before the restore put entries in them (ensureDirWithFlags), with
+	// off before the restore put entries in them (clearXFSOptions), with
 	// those they had, for the late pass to put back where their nodes have
-	// none.
+	// none.  The late pass takes each it sets the options of; the rest get
+	// theirs back as they were (putBackClearedXFS).
 	clearedXFS map[string]data.XFSOptions
 	// warned are the warnings given once per restore, by key, with the
 	// number of times each came up; see warnAbout.
@@ -357,13 +359,11 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	fatAttrs, hasFatAttrs := res.nodeFATAttributes(node, location)
 	xfsOpts, hasXfsOpts := res.nodeXFSOptions(node, location)
 	// BackOtter: a directory whose XFS options came off before its entries
-	// went in (ensureDirWithFlags) gets those it had back, last, where its
-	// node has none.
-	if had, ok := res.clearedXFS[target]; ok {
-		delete(res.clearedXFS, target)
-		if !hasXfsOpts {
-			xfsOpts, hasXfsOpts = had, true
-		}
+	// went in (clearXFSOptions) gets those it had back, last, where its
+	// node has none.  It stays in clearedXFS until the late pass sets them
+	// (restoreFileFlags): a restore that stops before puts them back.
+	if had, ok := res.clearedXFS[target]; ok && !hasXfsOpts {
+		xfsOpts, hasXfsOpts = had, true
 	}
 	if (hasFlags || hasDosFlags || hasFatAttrs || hasXfsOpts) && !res.flagsQueued(node) {
 		res.fileFlags = append(res.fileFlags, fileFlags{
@@ -666,6 +666,11 @@ func (res *Restorer) restoreFileFlags() error {
 			}
 		}
 		if f.hasXfsOpts {
+			// BackOtter: a directory's options, cleared before its
+			// entries went in or not, are the node's or those it had.
+			if f.typ == data.NodeTypeDir {
+				delete(res.clearedXFS, f.target)
+			}
 			debug.Log("restoreXFSOptions %v %+v", f.target, f.xfsOpts)
 			if err := fs.RestoreXFSOptions(f.target, f.typ, f.xfsOpts); err != nil {
 				if err := res.sanitizeError(f.location, res.warnAboutAll(f.location, err)); err != nil {
@@ -771,12 +776,7 @@ func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags ui
 		return err
 	}
 	if !created {
-		if had, ok := fs.ClearDirXFSOptions(target); ok {
-			if res.clearedXFS == nil {
-				res.clearedXFS = make(map[string]data.XFSOptions)
-			}
-			res.clearedXFS[target] = had
-		}
+		res.clearXFSOptions(target)
 		empty, err := fs.IsEmptyDir(target)
 		if err != nil {
 			debug.Log("not preparing %v for its flags: %v", target, err)
@@ -795,6 +795,47 @@ func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags ui
 	}
 	prepareDirForOptions(target, node, res.XattrSelectFilter, res.sn.FromBackOtter())
 	return prepErr
+}
+
+// clearXFSOptions takes the XFS options off the existing directory at
+// target, which the restore is about to put entries in, so that they inherit
+// none of them, and keeps those it had in clearedXFS: the late pass puts
+// them back where its node has none, and putBackClearedXFS those it doesn't
+// set (the target itself, which keeps its own metadata, or every one when
+// the restore stops early).
+func (res *Restorer) clearXFSOptions(target string) {
+	if res.opts.DryRun {
+		return
+	}
+	if had, ok := fs.ClearDirXFSOptions(target); ok {
+		if res.clearedXFS == nil {
+			res.clearedXFS = make(map[string]data.XFSOptions)
+		}
+		if _, ok := res.clearedXFS[target]; !ok {
+			res.clearedXFS[target] = had
+		}
+	}
+}
+
+// putBackClearedXFS gives the directories left in clearedXFS the XFS
+// options they had before the restore cleared them: those the late pass
+// didn't set, the target itself, which keeps its own metadata, and, when
+// the restore stops early (an error, a cancelled context), every one, as
+// the snapshot may say nothing about them (a node without options).  Best
+// effort: what fails is a warning.
+func (res *Restorer) putBackClearedXFS() {
+	targets := make([]string, 0, len(res.clearedXFS))
+	for target := range res.clearedXFS {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	for _, target := range targets {
+		debug.Log("putting back XFS options %v %+v", target, res.clearedXFS[target])
+		if err := fs.RestoreXFSOptions(target, data.NodeTypeDir, res.clearedXFS[target]); err != nil {
+			res.warn(fmt.Sprintf("%v: XFS options not put back: %v", target, err))
+		}
+	}
+	res.clearedXFS = nil
 }
 
 // pendingDir is a directory that isn't selected for the restore, but may
@@ -1000,6 +1041,10 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 		}
 	}
 
+	// BackOtter: whatever way the restore ends, the directories whose XFS
+	// options came off before their entries went in get them back.
+	defer res.putBackClearedXFS()
+
 	idx := NewHardlinkIndex[string]()
 	filerestorer := newFileRestorer(dst, res.repo.LoadBlobsFromPack, res.repo.LookupBlob,
 		res.repo.Connections(), res.opts.Sparse, res.opts.Delete, res.repo.StartWarmup, res.opts.Progress)
@@ -1021,8 +1066,16 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				// The target itself: when restoring "ID:subfolder" into
 				// a new target, it has the subfolder's node, and gets
 				// its casefolding while empty, as any other directory.
+				// BackOtter: otherwise it keeps its own metadata, but
+				// loses its XFS options until the end, as any directory
+				// that was there, so the entries made in it inherit
+				// none of them.
 				if targetNode == nil {
-					return res.ensureDir(target)
+					if err := res.ensureDir(target); err != nil {
+						return err
+					}
+					res.clearXFSOptions(target)
+					return nil
 				}
 				node = targetNode
 			} else if err := res.ensureParents(); err != nil {
@@ -1187,6 +1240,7 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 		return restoredFileCount, err
 	}
 	err = res.restoreFileFlags()
+	res.putBackClearedXFS()
 	res.warnTotals()
 	return restoredFileCount, err
 }
