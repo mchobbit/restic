@@ -39,6 +39,11 @@ type Restorer struct {
 	// the first pass is at that aren't selected themselves but may have
 	// selected entries (--include): see ensureParents.
 	pendingDirs []pendingDir
+	// clearedXFS are the directories, by target, whose XFS options came
+	// off before the restore put entries in them (ensureDirWithFlags), with
+	// those they had, for the late pass to put back where their nodes have
+	// none.
+	clearedXFS map[string]data.XFSOptions
 	// warned are the warnings given once per restore, by key, with the
 	// number of times each came up; see warnAbout.
 	warnedMu sync.Mutex
@@ -351,6 +356,15 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	dosFlags, hasDosFlags := res.nodeZFSDosFlags(node, location)
 	fatAttrs, hasFatAttrs := res.nodeFATAttributes(node, location)
 	xfsOpts, hasXfsOpts := res.nodeXFSOptions(node, location)
+	// BackOtter: a directory whose XFS options came off before its entries
+	// went in (ensureDirWithFlags) gets those it had back, last, where its
+	// node has none.
+	if had, ok := res.clearedXFS[target]; ok {
+		delete(res.clearedXFS, target)
+		if !hasXfsOpts {
+			xfsOpts, hasXfsOpts = had, true
+		}
+	}
 	if (hasFlags || hasDosFlags || hasFatAttrs || hasXfsOpts) && !res.flagsQueued(node) {
 		res.fileFlags = append(res.fileFlags, fileFlags{
 			target: target, location: location, typ: node.Type,
@@ -733,6 +747,11 @@ var prepareDirForOptions = fs.PrepareDirForOptions
 // others are set last, with restoreFileFlags.  BackOtter: on bcachefs it
 // also gives the directory then its options and project ID, which bcachefs
 // passes only to entries created after them (fs.PrepareDirForOptions).
+// A directory that was there loses its XFS options until the late pass,
+// so that the entries the restore makes in it inherit none of them (as in
+// one it creates, which gets them last): realtime inheritance would make
+// its new regular files realtime, on an XFS with a realtime device, for
+// good once they have data.
 func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags uint32) error {
 	if res.opts.DryRun {
 		return nil
@@ -752,6 +771,12 @@ func (res *Restorer) ensureDirWithFlags(target string, node *data.Node, flags ui
 		return err
 	}
 	if !created {
+		if had, ok := fs.ClearDirXFSOptions(target); ok {
+			if res.clearedXFS == nil {
+				res.clearedXFS = make(map[string]data.XFSOptions)
+			}
+			res.clearedXFS[target] = had
+		}
 		empty, err := fs.IsEmptyDir(target)
 		if err != nil {
 			debug.Log("not preparing %v for its flags: %v", target, err)

@@ -705,26 +705,73 @@ func TestRestorerXFSOptions(t *testing.T) {
 	_, err := res.RestoreTo(context.TODO(), dst)
 	rtest.OK(t, err)
 	for name, want := range map[string]string{"ext": "[e-----f-] 1048576", "dir": "[tE--S-] 2097152", "dir/in": "[-] 0"} {
-		out, err := exec.Command("xfs_io", "-r", "-c", "stat", filepath.Join(dst, name)).CombinedOutput()
-		rtest.OK(t, err)
-		var xflags, extsize string
-		for _, l := range strings.Split(string(out), "\n") {
-			f := strings.Fields(l)
-			if len(f) >= 3 && f[0] == "fsxattr.xflags" {
-				xflags = f[2]
-			}
-			if len(f) >= 3 && f[0] == "fsxattr.extsize" {
-				extsize = f[2]
-			}
-		}
-		x, _ := strconv.ParseUint(strings.TrimPrefix(xflags, "0x"), 16, 32)
-		kept := x & 0x17d01 // realtime too
+		x, extsize := xfsStat(t, filepath.Join(dst, name))
 		wantX := map[string]uint64{"ext": 0x2800, "dir": 0x5100}[name]
-		rtest.Assert(t, kept == wantX && extsize == strings.Fields(want)[1], "%v: xflags %v extsize %v, want %v", name, xflags, extsize, want)
+		rtest.Assert(t, x == wantX && extsize == strings.Fields(want)[1], "%v: xflags %#x extsize %v, want %v", name, x, extsize, want)
 	}
 	got, err := os.ReadFile(filepath.Join(dst, "ext"))
 	rtest.OK(t, err)
 	rtest.Equals(t, 70000, len(got))
+}
+
+// xfsStat returns the kept fsx_xflags (realtime too) and the extent size
+// hint of the file at path on XFS, as xfs_io's stat shows them.
+func xfsStat(t *testing.T, path string) (uint64, string) {
+	t.Helper()
+	out, err := exec.Command("xfs_io", "-r", "-c", "stat", path).CombinedOutput()
+	rtest.OK(t, err)
+	var xflags, extsize string
+	for _, l := range strings.Split(string(out), "\n") {
+		f := strings.Fields(l)
+		if len(f) >= 3 && f[0] == "fsxattr.xflags" {
+			xflags = f[2]
+		}
+		if len(f) >= 3 && f[0] == "fsxattr.extsize" {
+			extsize = f[2]
+		}
+	}
+	x, _ := strconv.ParseUint(strings.TrimPrefix(xflags, "0x"), 16, 32)
+	return x & 0x17d01, extsize
+}
+
+// With root, on a loop XFS: restoring over a tree that has a directory's
+// options already (an earlier restore into the same target), the entries
+// the restore makes in it inherit none of them, as in a new target.  One
+// whose node has none keeps those it had.
+func TestRestorerXFSOptionsOverExisting(t *testing.T) {
+	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	dir := &FileAttributes{}
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{attributes: dir, Nodes: map[string]Node{
+				"in":  File{Data: "in"},
+				"sub": Dir{Nodes: map[string]Node{"f": File{Data: "f"}}},
+			}},
+			"plain": Dir{Nodes: map[string]Node{"sub": Dir{}}},
+		},
+	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
+		dir: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":2097152,"xflags":20736}`)},
+	}))
+	dst := filepath.Join(mnt, "dst")
+	restore := func() {
+		res := NewRestorer(repo, sn, Options{})
+		res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
+		_, err := res.RestoreTo(context.TODO(), dst)
+		rtest.OK(t, err)
+	}
+	restore()
+	for _, name := range []string{"dir/in", "dir/sub", "plain/sub"} {
+		rtest.OK(t, os.RemoveAll(filepath.Join(dst, name)))
+	}
+	if out, err := exec.Command("xfs_io", "-c", "chattr +t", filepath.Join(dst, "plain")).CombinedOutput(); err != nil {
+		t.Fatalf("chattr +t: %v: %s", err, out)
+	}
+	restore()
+	for name, want := range map[string]uint64{"dir": 0x5100, "dir/in": 0, "dir/sub": 0, "dir/sub/f": 0, "plain": 0x100, "plain/sub": 0} {
+		x, _ := xfsStat(t, filepath.Join(dst, name))
+		rtest.Assert(t, x == want, "%v: xflags %#x, want %#x", name, x, want)
+	}
 }
 
 // A bare-metal restore's target has the other new file systems mounted

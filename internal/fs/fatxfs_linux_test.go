@@ -286,3 +286,47 @@ func TestXFSOptionsOnXFS(t *testing.T) {
 	_, ok, _ = fillNode(t, rdir, data.NodeTypeDir).XFSOptions()
 	rtest.Assert(t, !ok, "XFS options not cleared")
 }
+
+// With root, on a loop XFS whose realtime extent size (64k, without a
+// realtime device) is no multiple of a directory's 12k extent size hint:
+// XFS refuses realtime inheritance along with that hint's inheritance
+// (EINVAL), so the directory gets the rest, and only realtime inheritance
+// is unsupported.
+func TestXFSOptionsRtinheritRefused(t *testing.T) {
+	mnt := mountLoop(t, 320<<20, "mkfs.xfs", "-q", "-f", "-r", "extsize=64k")
+	dir := filepath.Join(mnt, "dir")
+	rtest.OK(t, os.Mkdir(dir, 0o755))
+	opts := data.XFSOptions{XFlags: 0x100 | 0x1000 | 0x2000, ExtSize: 12 << 10}
+	err := RestoreXFSOptions(dir, data.NodeTypeDir, opts)
+	var unsupported *UnsupportedError
+	rtest.Assert(t, errors.As(err, &unsupported) && unsupported.Bits == 0x100, "want rtinherit unsupported, got %v", err)
+	got, _, _ := fillNode(t, dir, data.NodeTypeDir).XFSOptions()
+	rtest.Equals(t, data.XFSOptions{XFlags: 0x3000, ExtSize: 12 << 10}, got)
+	// A hint that is a multiple goes on with it.
+	opts.ExtSize = 128 << 10
+	rtest.OK(t, RestoreXFSOptions(dir, data.NodeTypeDir, opts))
+	got, _, _ = fillNode(t, dir, data.NodeTypeDir).XFSOptions()
+	rtest.Equals(t, opts, got)
+}
+
+// With root, on a loop XFS: an existing directory's options come off
+// (ClearDirXFSOptions), and are given back as they were.
+func TestClearDirXFSOptions(t *testing.T) {
+	mnt := mountLoop(t, 320<<20, "mkfs.xfs", "-q", "-f")
+	dir := filepath.Join(mnt, "dir")
+	rtest.OK(t, os.Mkdir(dir, 0o755))
+	_, ok := ClearDirXFSOptions(dir)
+	rtest.Assert(t, !ok, "options cleared off a directory without any")
+	opts := data.XFSOptions{XFlags: 0x100 | 0x1000 | 0x4000, ExtSize: 2 << 20}
+	rtest.OK(t, RestoreXFSOptions(dir, data.NodeTypeDir, opts))
+	had, ok := ClearDirXFSOptions(dir)
+	rtest.Assert(t, ok, "options not cleared")
+	rtest.Equals(t, opts, had)
+	_, ok, _ = fillNode(t, dir, data.NodeTypeDir).XFSOptions()
+	rtest.Assert(t, !ok, "options left on")
+	rtest.OK(t, RestoreXFSOptions(dir, data.NodeTypeDir, had))
+	got, _, _ := fillNode(t, dir, data.NodeTypeDir).XFSOptions()
+	rtest.Equals(t, opts, got)
+	_, ok = ClearDirXFSOptions(t.TempDir())
+	rtest.Assert(t, !ok, "options cleared off a directory not on XFS")
+}

@@ -210,14 +210,25 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
   another file system than FAT, they get one warning per restore ("not
   FAT"), with the number of files.  So do XFS options (`linux.xfs_options`):
   a directory's go on in that last pass, so the entries the restore makes
-  in it inherit nothing (each has its own node); a regular file's go on
-  also as soon as the restore creates it, while it is empty, since XFS
-  takes an extent size hint on no file with data (`EINVAL`), and again in
-  the last pass, which leaves options that are right alone.  A file the
+  in it inherit nothing (each has its own node); one that was there (an
+  earlier restore's) loses its options before they go in, and gets back in
+  the last pass its node's, or those it had where its node has none.  A
+  regular file's go on also as soon as the restore creates it, while it is
+  empty, since XFS takes an extent size hint on no file with data
+  (`EINVAL`), and again in the last pass, which leaves options that are
+  right alone.  A file the
   restore writes over (one that was there, with data) can't get a new
-  extent size hint: that is a warning (S10).  Restored onto another file
-  system than XFS, they get one warning per restore ("not XFS"), with the
-  number of files.
+  extent size hint: that is a warning (S10).  A directory XFS refuses
+  realtime inheritance along with an extent size hint's inheritance
+  (`EINVAL`: a hint that isn't a multiple of the target's realtime extent
+  size) gets the rest, and realtime inheritance alone is a warning
+  (`linux.xfs_options 0x100`, S10).  A snapshot from before restic
+  0.19.1+backotter.6 or rustic_core 0.13.0+backotter.9 has no realtime
+  inheritance: restored over a directory that has it, a node with XFS
+  options takes it off (they say it had none), one without leaves it: an
+  accepted difference, in both tools.  Restored onto another file system
+  than XFS, they get one warning per restore ("not XFS"), with the number
+  of files.
   btrfs's no-copy-on-write flag goes on while a new file is still empty:
   btrfs ignores it on one with data.  Where the target file system doesn't support a flag, the
   others are still set and restic warns about that one (S10 below).  Where

@@ -266,6 +266,19 @@ func setXFSOptions(fd int, path string, dir bool, opts data.XFSOptions) error {
 	if err := ioctlFsxattr(fd, fsIOCFSSetXattr, &want); err != nil {
 		// XFS refuses (EINVAL) to change the extent size hint of a
 		// regular file that has data: one restored over an existing file.
+		// It refuses a directory realtime inheritance along with the
+		// inheritance of an extent size hint that isn't a multiple of
+		// its realtime extent size (xfs_ioctl_setattr_check_extsize):
+		// the directory then gets the rest, and only realtime
+		// inheritance is unsupported.
+		if dir && errors.Is(err, unix.EINVAL) && want.xflags&xfsXflagRtinherit != 0 {
+			rest := want
+			rest.xflags &^= xfsXflagRtinherit
+			if ioctlFsxattr(fd, fsIOCFSSetXattr, &rest) == nil {
+				return &UnsupportedError{Attr: xfsOptionsAttribute, Bits: xfsXflagRtinherit,
+					Err: &os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err}}
+			}
+		}
 		err = &os.PathError{Op: "FS_IOC_FSSETXATTR", Path: path, Err: err}
 		if unsupportedErr(err) {
 			return &UnsupportedError{Attr: xfsOptionsAttribute, Err: err}
@@ -289,6 +302,39 @@ func restoreXFSOptions(path string, typ data.NodeType, opts data.XFSOptions) err
 		return &UnsupportedError{Attr: xfsOptionsAttribute, Err: errNotXFS}
 	}
 	return setXFSOptions(fd, path, typ == data.NodeTypeDir, opts)
+}
+
+// clearDirXFSOptions takes the kept XFS options off the existing directory
+// at path, which the restore is about to put entries in, so that none of
+// them inherits any (they all pass to entries made after them), and returns
+// those it had, if it took any off.  Only on XFS; an error leaves the
+// directory as it is.
+func clearDirXFSOptions(path string) (data.XFSOptions, bool) {
+	fd, err := openForFlags(path, data.NodeTypeDir, nil)
+	if err != nil {
+		debug.Log("XFS options of %v not cleared: %v", path, err)
+		return data.XFSOptions{}, false
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var sfs unix.Statfs_t
+	if err := unix.Fstatfs(fd, &sfs); err != nil || uint32(sfs.Type) != xfsSuperMagic {
+		return data.XFSOptions{}, false
+	}
+	var cur fsxattr
+	if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &cur); err != nil {
+		debug.Log("XFS options of %v not cleared: %v", path, err)
+		return data.XFSOptions{}, false
+	}
+	had, ok := keptXFSOptions(cur, true)
+	if !ok {
+		return data.XFSOptions{}, false
+	}
+	none := wantedFsxattr(cur, data.XFSOptions{}, true)
+	if err := ioctlFsxattr(fd, fsIOCFSSetXattr, &none); err != nil {
+		debug.Log("XFS options of %v not cleared: %v", path, err)
+		return data.XFSOptions{}, false
+	}
+	return had, true
 }
 
 // prepareFileForXFSOptions gives the regular file at path the XFS options

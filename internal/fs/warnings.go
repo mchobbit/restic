@@ -16,7 +16,7 @@ import (
 // it is not a failed restore.  Every other failure stays an error.
 type UnsupportedError struct {
 	Attr data.GenericAttributeType
-	Bits uint64 // the file flags refused; 0 for other attributes
+	Bits uint64 // the file flags refused, or XFS options' xflags; 0 for other attributes
 	Err  error
 }
 

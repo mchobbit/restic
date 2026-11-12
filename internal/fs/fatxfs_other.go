@@ -20,3 +20,7 @@ func restoreXFSOptions(_ string, _ data.NodeType, _ data.XFSOptions) error {
 }
 
 func prepareFileForXFSOptions(_ string, _ data.XFSOptions) {}
+
+func clearDirXFSOptions(_ string) (data.XFSOptions, bool) {
+	return data.XFSOptions{}, false
+}

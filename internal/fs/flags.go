@@ -127,11 +127,24 @@ func PrepareFileForXFSOptions(path string, opts data.XFSOptions) {
 	prepareFileForXFSOptions(path, opts)
 }
 
+// ClearDirXFSOptions takes the XFS options off the existing directory at
+// path, which the restore is about to put entries in, so that they inherit
+// none of them (XFS passes each to the entries a directory gets after it),
+// and returns those it had, if it took any off, for RestoreXFSOptions to put
+// back in the last pass where the directory's node has none.  Only on XFS;
+// an error leaves the directory as it is.
+func ClearDirXFSOptions(path string) (data.XFSOptions, bool) {
+	return clearDirXFSOptions(path)
+}
+
 // RestoreXFSOptions sets the XFS options of the file at path, which has type
 // typ, to opts, leaving its other flags and project ID as they are.  The
 // restorer calls it in its last pass, before RestoreFileFlags.  A file
 // system that isn't XFS gives an *UnsupportedError, as do options it
-// refuses (EINVAL: a new extent size hint on a file that has data).
+// refuses (EINVAL: a new extent size hint on a file that has data); a
+// directory refused realtime inheritance alone (EINVAL: with an extent size
+// hint's inheritance whose size isn't a multiple of the realtime extent
+// size) gets the rest, with an *UnsupportedError for bit 0x100.
 func RestoreXFSOptions(path string, typ data.NodeType, opts data.XFSOptions) error {
 	return restoreXFSOptions(path, typ, opts)
 }
