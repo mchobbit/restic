@@ -158,10 +158,13 @@ const xfsSuperMagic = 0x58465342
 // The fsx_xflags kept on XFS, from <linux/fs.h>: those of a file's options
 // that linux.inode_flags doesn't carry (it has immutable, append-only, sync,
 // noatime, nodump and project inheritance) and that a file can be given.
-// Not realtime and its inheritance, which need a realtime device, nor DAX;
-// not preallocated (p), which a restore that preallocates (S5) gives every
-// file it writes dense, and none it writes sparse.
+// Realtime inheritance only on directories, the only files XFS gives it
+// (xfs_flags2diflags), and that take it without a realtime device; not
+// realtime itself, which a regular file only gets on one, nor DAX; not
+// preallocated (p), which a restore that preallocates (S5) gives every file
+// it writes dense, and none it writes sparse.
 const (
+	xfsXflagRtinherit    = 0x00000100 // FS_XFLAG_RTINHERIT    t (directories)
 	xfsXflagNosymlinks   = 0x00000400 // FS_XFLAG_NOSYMLINKS   n
 	xfsXflagExtsize      = 0x00000800 // FS_XFLAG_EXTSIZE      e
 	xfsXflagExtszinherit = 0x00001000 // FS_XFLAG_EXTSZINHERIT E
@@ -170,18 +173,28 @@ const (
 	xfsXflagCowextsize   = 0x00010000 // FS_XFLAG_COWEXTSIZE   C
 	xfsKept              = xfsXflagNosymlinks | xfsXflagExtsize | xfsXflagExtszinherit |
 		xfsXflagNodefrag | xfsXflagFilestream | xfsXflagCowextsize
+	xfsKeptDir = xfsKept | xfsXflagRtinherit
 )
+
+// xfsKeptFor returns the fsx_xflags kept on a directory when dir is true,
+// on a regular file otherwise.
+func xfsKeptFor(dir bool) uint32 {
+	if dir {
+		return xfsKeptDir
+	}
+	return xfsKept
+}
 
 // errNotXFS is the reason XFS options aren't restored on a file system
 // other than XFS.
 var errNotXFS = errors.New("not XFS")
 
 // keptXFSOptions returns the XFS options of a file whose FS_IOC_FSGETXATTR
-// gave fsx, and whether it has any: the kept xflags, with the extent size
-// hint where extsize or its inheritance is set, and the copy-on-write one
-// where cowextsize is.
-func keptXFSOptions(fsx fsxattr) (data.XFSOptions, bool) {
-	opts := data.XFSOptions{XFlags: fsx.xflags & xfsKept}
+// gave fsx, a directory when dir is true, and whether it has any: the kept
+// xflags, with the extent size hint where extsize or its inheritance is
+// set, and the copy-on-write one where cowextsize is.
+func keptXFSOptions(fsx fsxattr, dir bool) (data.XFSOptions, bool) {
+	opts := data.XFSOptions{XFlags: fsx.xflags & xfsKeptFor(dir)}
 	if opts.XFlags == 0 {
 		return data.XFSOptions{}, false
 	}
@@ -194,13 +207,15 @@ func keptXFSOptions(fsx fsxattr) (data.XFSOptions, bool) {
 	return opts, true
 }
 
-// wantedFsxattr returns cur, a file's fsxattr, with the options opts in
-// place of its own: the kept xflags, and the hints' sizes, 0 where their
-// flags are off (XFS refuses a size without its flag).  The rest (other
-// flags, the project ID) stays as it is.
-func wantedFsxattr(cur fsxattr, opts data.XFSOptions) fsxattr {
+// wantedFsxattr returns cur, the fsxattr of a file, a directory when dir is
+// true, with the options opts in place of its own: the kept xflags, and the
+// hints' sizes, 0 where their flags are off (XFS refuses a size without its
+// flag).  The rest (other flags, the project ID) stays as it is; so does a
+// regular file's, for realtime inheritance, which only directories take.
+func wantedFsxattr(cur fsxattr, opts data.XFSOptions, dir bool) fsxattr {
+	kept := xfsKeptFor(dir)
 	w := cur
-	w.xflags = cur.xflags&^xfsKept | opts.XFlags&xfsKept
+	w.xflags = cur.xflags&^kept | opts.XFlags&kept
 	w.extsize, w.cowextsize = 0, 0
 	if w.xflags&(xfsXflagExtsize|xfsXflagExtszinherit) != 0 {
 		w.extsize = opts.ExtSize
@@ -228,14 +243,14 @@ func nodeFillXFSOptions(node *data.Node, path string, fd int, dev uint64) {
 		debug.Log("no XFS options for %v: %v", path, err)
 		return
 	}
-	if opts, ok := keptXFSOptions(fsx); ok {
+	if opts, ok := keptXFSOptions(fsx, node.Type == data.NodeTypeDir); ok {
 		node.SetXFSOptions(opts)
 	}
 }
 
-// setXFSOptions gives the file open as fd, at path, the XFS options opts,
-// unless it has them already.
-func setXFSOptions(fd int, path string, opts data.XFSOptions) error {
+// setXFSOptions gives the file open as fd, at path, a directory when dir is
+// true, the XFS options opts, unless it has them already.
+func setXFSOptions(fd int, path string, dir bool, opts data.XFSOptions) error {
 	var cur fsxattr
 	if err := ioctlFsxattr(fd, fsIOCFSGetXattr, &cur); err != nil {
 		err = &os.PathError{Op: "FS_IOC_FSGETXATTR", Path: path, Err: err}
@@ -244,7 +259,7 @@ func setXFSOptions(fd int, path string, opts data.XFSOptions) error {
 		}
 		return err
 	}
-	want := wantedFsxattr(cur, opts)
+	want := wantedFsxattr(cur, opts, dir)
 	if sameXFSOptions(cur, want) {
 		return nil
 	}
@@ -273,7 +288,7 @@ func restoreXFSOptions(path string, typ data.NodeType, opts data.XFSOptions) err
 	if uint32(st.Type) != xfsSuperMagic {
 		return &UnsupportedError{Attr: xfsOptionsAttribute, Err: errNotXFS}
 	}
-	return setXFSOptions(fd, path, opts)
+	return setXFSOptions(fd, path, typ == data.NodeTypeDir, opts)
 }
 
 // prepareFileForXFSOptions gives the regular file at path the XFS options
@@ -302,7 +317,7 @@ func prepareFileForXFSOptions(path string, opts data.XFSOptions) {
 	if err := unix.Fstatfs(fd, &sfs); err != nil || uint32(sfs.Type) != xfsSuperMagic {
 		return
 	}
-	if err := setXFSOptions(fd, path, opts); err != nil {
+	if err := setXFSOptions(fd, path, false, opts); err != nil {
 		debug.Log("XFS options of %v not set early: %v", path, err)
 	}
 }

@@ -101,7 +101,7 @@ const (
 	TypeFreeBSDZFSProject GenericAttributeType = "freebsd.zfs_project"
 	// TypeLinuxFATAttributes is the GenericAttributeType used for storing a Linux file's FAT attributes (FAT_IOCTL_GET_ATTRIBUTES on vfat and msdos: readonly, hidden, system, archive), when they aren't what a new file or directory has; 0 is a value.
 	TypeLinuxFATAttributes GenericAttributeType = "linux.fat_attrs"
-	// TypeLinuxXFSOptions is the GenericAttributeType used for storing a Linux file's XFS options (FS_IOC_FSGETXATTR on XFS: extent size hints, extsize inheritance, nodefrag, filestream, nosymlinks, copy-on-write extent size hint), when it has any.
+	// TypeLinuxXFSOptions is the GenericAttributeType used for storing a Linux file's XFS options (FS_IOC_FSGETXATTR on XFS: extent size hints, extsize inheritance, nodefrag, filestream, nosymlinks, copy-on-write extent size hint, a directory's realtime inheritance), when it has any.
 	TypeLinuxXFSOptions GenericAttributeType = "linux.xfs_options"
 	// TypeIllumosUnreadSize is the GenericAttributeType used for marking a regular file whose contents weren't backed up, because illumos' av_quarantined system attribute refused to open it: its size then, in bytes (the node's own size is 0, with no content).
 	TypeIllumosUnreadSize GenericAttributeType = "illumos.unread_size"

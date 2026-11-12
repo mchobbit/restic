@@ -108,10 +108,10 @@ func (node *Node) SetFATAttributes(attrs uint32) {
 
 // XFSOptions are a file's options on XFS that linux.inode_flags and
 // linux.project_id don't carry (TypeLinuxXFSOptions): fsx_xflags'
-// extent size hint, its inheritance, nodefrag, filestream, nosymlinks and
-// the copy-on-write extent size hint, and the two hints' sizes in bytes,
-// left out when 0.  The fields are in the order of their JSON names, as
-// rustic-bko writes them.
+// extent size hint, its inheritance, nodefrag, filestream, nosymlinks, the
+// copy-on-write extent size hint and, on directories, realtime
+// inheritance, and the two hints' sizes in bytes, left out when 0.  The
+// fields are in the order of their JSON names, as rustic-bko writes them.
 type XFSOptions struct {
 	CowExtSize uint32 `json:"cowextsize,omitempty"`
 	ExtSize    uint32 `json:"extsize,omitempty"`

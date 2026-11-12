@@ -71,26 +71,43 @@ func TestRestoreFATAttributesWith(t *testing.T) {
 }
 
 func TestKeptXFSOptions(t *testing.T) {
-	_, ok := keptXFSOptions(fsxattr{xflags: 0x80000002 | 0x8 | 0x200}) // hasattr, prealloc, immutable, projinherit
+	_, ok := keptXFSOptions(fsxattr{xflags: 0x80000002 | 0x8 | 0x200}, false) // hasattr, prealloc, immutable, projinherit
 	rtest.Assert(t, !ok, "no XFS options kept")
-	opts, ok := keptXFSOptions(fsxattr{xflags: 0x80000802, extsize: 1 << 20})
+	opts, ok := keptXFSOptions(fsxattr{xflags: 0x80000802, extsize: 1 << 20}, false)
 	rtest.Assert(t, ok, "extsize not kept")
 	rtest.Equals(t, data.XFSOptions{XFlags: 0x800, ExtSize: 1 << 20}, opts)
-	opts, ok = keptXFSOptions(fsxattr{xflags: 0x1000 | 0x4000 | 0x10000, extsize: 2 << 20, cowextsize: 4 << 20})
+	opts, ok = keptXFSOptions(fsxattr{xflags: 0x1000 | 0x4000 | 0x10000, extsize: 2 << 20, cowextsize: 4 << 20}, true)
 	rtest.Assert(t, ok, "extsz-inherit not kept")
 	rtest.Equals(t, data.XFSOptions{XFlags: 0x15000, ExtSize: 2 << 20, CowExtSize: 4 << 20}, opts)
-	opts, _ = keptXFSOptions(fsxattr{xflags: 0x2000, extsize: 4096})
+	opts, _ = keptXFSOptions(fsxattr{xflags: 0x2000, extsize: 4096}, false)
 	rtest.Equals(t, data.XFSOptions{XFlags: 0x2000}, opts)
 
 	// The kept flags and sizes replaced; prealloc, immutable and the
 	// project ID left as they are.
 	cur := fsxattr{xflags: 0x80000002 | 0x8 | 0x2000, projid: 7}
-	want := wantedFsxattr(cur, data.XFSOptions{XFlags: 0x800, ExtSize: 1 << 20})
+	want := wantedFsxattr(cur, data.XFSOptions{XFlags: 0x800, ExtSize: 1 << 20}, false)
 	rtest.Equals(t, fsxattr{xflags: 0x80000002 | 0x8 | 0x800, extsize: 1 << 20, projid: 7}, want)
 	rtest.Assert(t, !sameXFSOptions(cur, want), "different options taken for the same")
-	want = wantedFsxattr(fsxattr{xflags: 0x800, extsize: 1 << 20}, data.XFSOptions{})
+	want = wantedFsxattr(fsxattr{xflags: 0x800, extsize: 1 << 20}, data.XFSOptions{}, false)
 	rtest.Equals(t, fsxattr{}, want)
-	rtest.Assert(t, sameXFSOptions(fsxattr{xflags: 0x2000, nextents: 3}, wantedFsxattr(fsxattr{xflags: 0x2000, nextents: 3}, data.XFSOptions{XFlags: 0x2000})), "same options differ")
+
+	// Realtime inheritance: kept on a directory, alone too, and set and
+	// cleared there; on a regular file neither kept nor set.  Realtime
+	// itself never.
+	opts, ok = keptXFSOptions(fsxattr{xflags: 0x80000000 | 0x100}, true)
+	rtest.Assert(t, ok, "a directory's rtinherit not kept")
+	rtest.Equals(t, data.XFSOptions{XFlags: 0x100}, opts)
+	_, ok = keptXFSOptions(fsxattr{xflags: 0x100}, false)
+	rtest.Assert(t, !ok, "a regular file's rtinherit kept")
+	_, ok = keptXFSOptions(fsxattr{xflags: 0x1}, false)
+	rtest.Assert(t, !ok, "realtime kept")
+	opts, _ = keptXFSOptions(fsxattr{xflags: 0x1 | 0x100 | 0x2000}, true)
+	rtest.Equals(t, data.XFSOptions{XFlags: 0x2100}, opts)
+	rtest.Equals(t, fsxattr{xflags: 0x2100}, wantedFsxattr(fsxattr{xflags: 0x2000}, data.XFSOptions{XFlags: 0x2100}, true))
+	rtest.Equals(t, fsxattr{xflags: 0x2000}, wantedFsxattr(fsxattr{xflags: 0x2100}, data.XFSOptions{XFlags: 0x2000}, true))
+	rtest.Equals(t, fsxattr{xflags: 0x2000}, wantedFsxattr(fsxattr{xflags: 0x2000}, data.XFSOptions{XFlags: 0x2101}, false))
+	rtest.Equals(t, fsxattr{}, wantedFsxattr(fsxattr{}, data.XFSOptions{XFlags: 0x1}, true))
+	rtest.Assert(t, sameXFSOptions(fsxattr{xflags: 0x2000, nextents: 3}, wantedFsxattr(fsxattr{xflags: 0x2000, nextents: 3}, data.XFSOptions{XFlags: 0x2000}, false)), "same options differ")
 }
 
 // FAT attributes and XFS options restored onto another file system are
@@ -223,7 +240,7 @@ func TestXFSOptionsOnXFS(t *testing.T) {
 	rtest.OK(t, os.WriteFile(file, nil, 0o644))
 	rtest.OK(t, os.Mkdir(dir, 0o755))
 	xfsIO("-c", "extsize 1m", "-c", "chattr +f", file)
-	xfsIO("-c", "extsize 2m", "-c", "chattr +S", dir)
+	xfsIO("-c", "extsize 2m", "-c", "chattr +S", "-c", "chattr +t", dir)
 	rtest.OK(t, os.WriteFile(file, make([]byte, 65536), 0o644))
 
 	fopts, ok, err := fillNode(t, file, data.NodeTypeFile).XFSOptions()
@@ -233,7 +250,7 @@ func TestXFSOptionsOnXFS(t *testing.T) {
 	dopts, ok, err := fillNode(t, dir, data.NodeTypeDir).XFSOptions()
 	rtest.OK(t, err)
 	rtest.Assert(t, ok, "directory's XFS options not kept")
-	rtest.Equals(t, data.XFSOptions{XFlags: 0x5000, ExtSize: 2 << 20}, dopts)
+	rtest.Equals(t, data.XFSOptions{XFlags: 0x5100, ExtSize: 2 << 20}, dopts)
 	plain := filepath.Join(mnt, "plain")
 	f, err := os.Create(plain)
 	rtest.OK(t, err)
@@ -255,6 +272,11 @@ func TestXFSOptionsOnXFS(t *testing.T) {
 	rtest.OK(t, RestoreXFSOptions(rdir, data.NodeTypeDir, dopts))
 	got, _, _ = fillNode(t, rdir, data.NodeTypeDir).XFSOptions()
 	rtest.Equals(t, dopts, got)
+	// A regular file is given no realtime inheritance (XFS has none
+	// for it).
+	rtest.OK(t, RestoreXFSOptions(rfile, data.NodeTypeFile, data.XFSOptions{XFlags: fopts.XFlags | 0x100, ExtSize: fopts.ExtSize}))
+	got, _, _ = fillNode(t, rfile, data.NodeTypeFile).XFSOptions()
+	rtest.Equals(t, fopts, got)
 	// Too late for a file with data: unsupported (EINVAL).
 	err = RestoreXFSOptions(plain, data.NodeTypeFile, fopts)
 	var unsupported *UnsupportedError

@@ -685,7 +685,7 @@ func TestRestorerFATAttributes(t *testing.T) {
 
 // With root, on a loop XFS: a file's extent size hint goes on before its
 // contents (XFS takes none on a file with data), a directory's options at
-// the end.
+// the end, so that its entries inherit none of them.
 func TestRestorerXFSOptions(t *testing.T) {
 	mnt := mountLoopFS(t, 320<<20, "mkfs.xfs", "-q", "-f")
 	ext, dir := &FileAttributes{}, &FileAttributes{}
@@ -697,14 +697,14 @@ func TestRestorerXFSOptions(t *testing.T) {
 		},
 	}, attributesFor(map[*FileAttributes]map[data.GenericAttributeType]json.RawMessage{
 		ext: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":1048576,"xflags":10240}`)},
-		dir: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":2097152,"xflags":20480}`)},
+		dir: {data.TypeLinuxXFSOptions: json.RawMessage(`{"extsize":2097152,"xflags":20736}`)},
 	}))
 	dst := filepath.Join(mnt, "dst")
 	res := NewRestorer(repo, sn, Options{})
 	res.Warn = func(msg string) { t.Errorf("warning: %v", msg) }
 	_, err := res.RestoreTo(context.TODO(), dst)
 	rtest.OK(t, err)
-	for name, want := range map[string]string{"ext": "[e-----f-] 1048576", "dir": "[E--S-] 2097152"} {
+	for name, want := range map[string]string{"ext": "[e-----f-] 1048576", "dir": "[tE--S-] 2097152", "dir/in": "[-] 0"} {
 		out, err := exec.Command("xfs_io", "-r", "-c", "stat", filepath.Join(dst, name)).CombinedOutput()
 		rtest.OK(t, err)
 		var xflags, extsize string
@@ -718,8 +718,8 @@ func TestRestorerXFSOptions(t *testing.T) {
 			}
 		}
 		x, _ := strconv.ParseUint(strings.TrimPrefix(xflags, "0x"), 16, 32)
-		kept := x & 0x17c00
-		wantX := map[string]uint64{"ext": 0x2800, "dir": 0x5000}[name]
+		kept := x & 0x17d01 // realtime too
+		wantX := map[string]uint64{"ext": 0x2800, "dir": 0x5100}[name]
 		rtest.Assert(t, kept == wantX && extsize == strings.Fields(want)[1], "%v: xflags %v extsize %v, want %v", name, xflags, extsize, want)
 	}
 	got, err := os.ReadFile(filepath.Join(dst, "ext"))
