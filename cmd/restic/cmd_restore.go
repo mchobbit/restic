@@ -74,6 +74,7 @@ type RestoreOptions struct {
 	ExcludeXattrPattern []string
 	IncludeXattrPattern []string
 	OwnershipByName     bool
+	Exact               bool
 	TargetMetadata      bool
 }
 
@@ -95,6 +96,9 @@ func (opts *RestoreOptions) AddFlags(f *pflag.FlagSet) {
 	if runtime.GOOS != "windows" {
 		f.BoolVar(&opts.OwnershipByName, "ownership-by-name", false, "restore file ownership by user name and group name (except POSIX ACLs)")
 	}
+	// BackOtter: for bko-holt's btrfs snapshots, each a snapshot of a tree
+	// restored before, as rustic-bko's (internal/restorer/exact.go).
+	f.BoolVar(&opts.Exact, "exact", false, "make the target exactly the snapshot, writing only what differs: implies --delete and --overwrite always (existing files verified blob by blob); a file with other names gets a name of its own first; an entry whose metadata already matches is left untouched")
 	// BackOtter: bko-holt's main restore, whose target holds other
 	// subvolumes (not fresh) and whose root's metadata the backup holds only
 	// once its alias is left out.
@@ -143,7 +147,11 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		return errors.Fatal("--dry-run and --verify are mutually exclusive")
 	}
 
-	if opts.Delete && filepath.Clean(opts.Target) == "/" && !hasExcludes && !hasIncludes {
+	if opts.Exact && opts.Overwrite != restorer.OverwriteAlways {
+		return errors.Fatal("--exact verifies every existing file: --overwrite must be always")
+	}
+
+	if (opts.Delete || opts.Exact) && filepath.Clean(opts.Target) == "/" && !hasExcludes && !hasIncludes {
 		return errors.Fatal("'--target / --delete' must be combined with an include or exclude filter")
 	}
 
@@ -181,6 +189,7 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		Overwrite:       opts.Overwrite,
 		Delete:          opts.Delete,
 		OwnershipByName: opts.OwnershipByName,
+		Exact:           opts.Exact,
 		TargetMetadata:  opts.TargetMetadata,
 	})
 	res.TargetNode = subfolderNode

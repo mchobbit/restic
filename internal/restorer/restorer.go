@@ -69,7 +69,7 @@ type Restorer struct {
 	// otherwise keep mkfs's defaults and no SELinux label.  A target with
 	// files or other entries keeps its own owner,
 	// mode, timestamps, extended attributes and flags, as in stock restic
-	// (targetNode), but with Options.TargetMetadata.
+	// (targetNode), but with Options.Exact or Options.TargetMetadata.
 	TargetNode *data.Node
 }
 
@@ -82,6 +82,14 @@ type Options struct {
 	Overwrite       OverwriteBehavior
 	Delete          bool
 	OwnershipByName bool
+	// BackOtter: Exact makes a target that is there already exactly the
+	// snapshot, writing only what differs (exact.go): it implies Delete and
+	// OverwriteAlways (every existing file's contents verified, blob by
+	// blob); an existing file with other names gets a name of its own
+	// first; an entry whose metadata already matches is left untouched, a
+	// special file that is the same too; the target gets TargetNode's
+	// metadata.  As rustic-bko's restore --exact.
+	Exact bool
 	// BackOtter: TargetMetadata gives the target TargetNode's metadata, set
 	// last, even when it isn't fresh (rustic-bko's --target-metadata).
 	TargetMetadata bool
@@ -140,6 +148,10 @@ func (c *OverwriteBehavior) Type() string {
 
 // NewRestorer creates a restorer preloaded with the content from the snapshot id.
 func NewRestorer(repo restic.Repository, sn *data.Snapshot, opts Options) *Restorer {
+	if opts.Exact {
+		opts.Delete = true
+		opts.Overwrite = OverwriteAlways
+	}
 	r := &Restorer{
 		repo:              repo,
 		opts:              opts,
@@ -321,7 +333,9 @@ func (res *Restorer) traverseTreeInner(ctx context.Context, target, location str
 }
 
 func (res *Restorer) restoreNodeTo(node *data.Node, target, location string) error {
-	if !res.opts.DryRun {
+	// BackOtter: under --exact, a special file that is already the same (a
+	// symbolic link to the same target) stays, and so stays shared.
+	if !res.opts.DryRun && !res.keptSpecial(node, target) {
 		debug.Log("restoreNode %v %v %v", node.Name, target, location)
 		// BackOtter: flags that refuse removal come off first, where
 		// the node says what they are (clearRestrictingFlags).
@@ -345,12 +359,23 @@ func (res *Restorer) restoreNodeMetadataTo(node *data.Node, target, location str
 	if res.opts.DryRun {
 		return nil
 	}
+	// BackOtter: under --exact, an entry whose metadata already matches is
+	// left untouched: setting it again would change its inode (the change
+	// time), which a btrfs snapshot then no longer shares.  A directory
+	// whose XFS options came off before its entries went in (and so
+	// doesn't match where its node has them) gets back those it had
+	// (putBackClearedXFS).
+	if res.opts.Exact && res.metadataMatches(node, target) {
+		debug.Log("metadata already matches: %v", target)
+		return nil
+	}
 	debug.Log("restoreNodeMetadata %v %v %v", node.Name, target, location)
 	err := fs.NodeRestoreMetadata(node, target, res.Warn, res.XattrSelectFilter, res.opts.OwnershipByName)
 	if err != nil {
 		debug.Log("node.RestoreMetadata(%s) error %v", target, err)
 		err = res.warnAboutAll(location, err)
 	}
+	res.removeLabel(node, target, location)
 	// BackOtter: a node without a project ID in a snapshot from BackOtter
 	// had project ID 0; in another, the file keeps the one it has (one it
 	// inherited from its directory on bcachefs), as in stock restic.
@@ -552,9 +577,14 @@ func (res *Restorer) warnAbout(location string, err error) {
 	var unsupported *fs.UnsupportedError
 	var sid *fs.SIDWarning
 	var malformed *data.MalformedAttributeError
+	var label *labelError
 	var key, text, msg string
 	counted := false
 	switch {
+	case errors.As(err, &label):
+		text = "SELinux labels the snapshot hasn't got not removed"
+		key, counted = text, true
+		msg = fmt.Sprintf("%v: %v: %v", location, text, label.err)
 	case errors.As(err, &unsupported):
 		text = fmt.Sprintf("%v", unsupported.Attr)
 		if unsupported.Bits != 0 {
@@ -878,8 +908,9 @@ func (res *Restorer) ensureParents() error {
 // or a shared one with the sticky bit or write permission for others, such
 // as an empty /tmp or /dev/shm) keeps its owner, mode, times, extended
 // attributes, ACLs and flags, as in stock restic, which never gives the
-// target metadata.  BackOtter: but with --target-metadata, which gives it
-// to any directory at dst, set last.  nil when dst keeps its own.
+// target metadata.  BackOtter: but with --exact or --target-metadata, which
+// give it to any directory at dst, set last (with --exact only where it
+// differs).  nil when dst keeps its own.
 func (res *Restorer) targetNode(dst string) *data.Node {
 	if res.TargetNode == nil {
 		return nil
@@ -891,8 +922,8 @@ func (res *Restorer) targetNode(dst string) *data.Node {
 	if err != nil || !fi.IsDir() {
 		return nil
 	}
-	// BackOtter: --target-metadata gives it to any directory.
-	if res.opts.TargetMetadata {
+	// BackOtter: --exact and --target-metadata give it to any directory.
+	if res.opts.Exact || res.opts.TargetMetadata {
 		return res.TargetNode
 	}
 	if fresh, err := freshTarget(dst); err != nil || !fresh {
@@ -1116,6 +1147,14 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 				idx.Add(node.Inode, node.DeviceID, location)
 			}
 
+			// BackOtter: under --exact, a file there with other names
+			// gets one of its own first, so that no write reaches them.
+			if res.opts.Exact && !res.opts.DryRun {
+				if err := res.breakLinkForExact(node, target, location); err != nil {
+					return err
+				}
+			}
+
 			sparse := res.nodeSparse(node, location)
 			buf, err = res.withOverwriteCheck(ctx, node, target, location, false, buf, func(updateMetadataOnly bool, matches *fileState) error {
 				// BackOtter: a file in the way loses the flags that
@@ -1207,6 +1246,11 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 			}
 
 			if idx.Has(node.Inode, node.DeviceID) && idx.Value(node.Inode, node.DeviceID) != location {
+				// BackOtter: under --exact, a name already of that file
+				// stays.
+				if res.opts.Exact && sameFile(filerestorer.targetPath(idx.Value(node.Inode, node.DeviceID)), target) {
+					return res.restoreNodeMetadataTo(node, target, location)
+				}
 				_, err := res.withOverwriteCheck(ctx, node, target, location, true, nil, func(_ bool, _ *fileState) error {
 					return res.restoreHardlinkAt(node, filerestorer.targetPath(idx.Value(node.Inode, node.DeviceID)), target, location)
 				})

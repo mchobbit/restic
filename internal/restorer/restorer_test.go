@@ -1026,8 +1026,8 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 	}
 }
 
-// --target-metadata gives a target with entries the subfolder's metadata;
-// without it the target keeps its own.
+// --target-metadata, and --exact, give a target with entries the
+// subfolder's metadata; without them it keeps its own.
 func TestRestoreTargetMetadataNotFresh(t *testing.T) {
 	mtime := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
 	repo := repository.TestRepository(t)
@@ -1053,6 +1053,7 @@ func TestRestoreTargetMetadataNotFresh(t *testing.T) {
 	}{
 		{"plain", Options{}, false},
 		{"target-metadata", Options{TargetMetadata: true}, true},
+		{"exact", Options{Exact: true}, true},
 	} {
 		target := filepath.Join(rtest.TempDir(t), "target")
 		rtest.OK(t, os.Mkdir(target, 0o755))
