@@ -406,6 +406,8 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
     depth, only such entries and at least one mount point (`var/` and
     `var/lib/` above a `var/lib/portables` subvolume).
 
+  With `restore --exact` or `--target-metadata` the target gets it
+  whatever it holds.
   So a bare-metal restore's root still gets the node's metadata with the
   other new file systems mounted below it (`/boot`, `/boot/efi`, `/home`,
   ZFS datasets, btrfs subvolumes).  A plain directory on the target's own
@@ -527,6 +529,50 @@ restores; rustic-bko follows the same rule).  So, for a stock snapshot:
   blobs that still matched out of the new file: the whole group came back
   with NULs where they were, or empty (when only its size was wrong), with
   no error.  Stock restic has the same bug.  rustic-bko was right.
+- **`restore --exact`, `--clone-from PATH=DIR`, `--target-metadata`**,
+  restore-side only, as rustic-bko's (0.11.4+backotter.11, rustic_core
+  `commands/restore/exact.rs`), for bko-holt load's shared btrfs snapshots
+  (backotter `docs/design/btrfs-snapshots.md`).  `--exact` makes a target
+  that is there already exactly the snapshot, writing only what differs:
+  - it implies `--delete` and `--overwrite always` (another `--overwrite`
+    is refused), so every existing file is read and compared blob by blob
+    (rustic-bko: `--verify-existing`), and a file of the same size and
+    mtime with other contents is fixed;
+  - an existing regular file with more than one link is first replaced by
+    a reflink clone of itself (`FICLONE` to `.bko-exact-NAME` in its
+    directory, renamed over it), or removed where the file system can't
+    clone, so no write or metadata change reaches its other names; the
+    second pass then makes the snapshot's links, and a name that already
+    is the file stays;
+  - an entry whose metadata already matches is left untouched: what a
+    backup with real atimes would record for it now (`ToNode`) is its node,
+    but for what a restore doesn't set (change time, inode, device, link
+    count, owner names, contents) and the owner's IDs when not root; with
+    `--ownership-by-name` as root nothing matches.  So an exact restore
+    over a matching tree moves no ctime (but for a symlink's atime on a
+    mount with atimes, which reading it moves, and for hard-linked files,
+    whose links are broken and made again);
+  - a symlink to the same target, a FIFO and the same device stay;
+  - a restricting flag comes off first (as for every restore over a file,
+    above) and goes back with the late flags if the node has it;
+  - an SELinux label the node lacks is removed (only under `--exact`);
+  - the target gets the subfolder's own metadata, whatever it holds.
+
+  `--clone-from PATH=DIR` (only with `--exact`): before the restore, the
+  same snapshot's tree at `PATH` (a directory) is walked, metadata only;
+  each regular file there of more than 0 bytes that `DIR/relpath` holds,
+  a regular file of its size, is offered by its content (blob list), the
+  first in depth-first name order winning, but none at or below the
+  target when that is inside `DIR`.  A file the restore would write whose
+  content is offered, and that takes no flag or XFS option before its
+  data (no-copy-on-write), is cloned whole and given its metadata after; a
+  clone that fails writes the file (whole, if the clone emptied it first).
+  A file is never cloned onto itself, nor onto one with other names.  Only
+  Linux clones (`unix.IoctlFileClone`); elsewhere every clone fails and
+  the file is written, and `--exact` breaks a hard link by removing the
+  name.  `--target-metadata` gives the target the subfolder's metadata
+  even when it isn't fresh (below).  bko-holt greps `restore --help` for
+  `--exact` and `--target-metadata`.
 - The version reads `X.Y.Z+backotter.N`, so `restic version` and every
   snapshot's program version say which build made it.
 

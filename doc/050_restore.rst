@@ -167,6 +167,43 @@ the whole system.
 The ``--delete`` option also allows overwriting a non-empty directory if the snapshot contains a
 file with the same name.
 
+Making a target exactly the snapshot
+------------------------------------
+
+This build (BackOtter's restic, as BackOtter's rustic) has ``--exact``, which makes
+a target that is there already exactly the snapshot, writing only what differs, so
+that what is the same stays shared on a file system with snapshots or reflinks (a
+btrfs snapshot of a tree restored before):
+
+* it implies ``--delete`` and ``--overwrite always``: every existing file's
+  contents are verified blob by blob, so a file of the same size and mtime with
+  other contents is fixed;
+* an existing file with other names (hard links) first gets a name of its own, a
+  reflink clone of itself where the file system can (Linux's ``FICLONE``), else
+  nothing (it is removed, and written whole), so that no write reaches the other
+  names; the snapshot's own hard links are then made, and kept where they are;
+* an entry whose metadata (owner, mode, times, extended attributes, ACLs, flags)
+  already matches is left untouched, so an exact restore over a matching tree
+  moves no change time; a symbolic link to the same target, a FIFO or the same
+  device stays; a flag that refuses changes (immutable, append-only) comes off
+  first and goes back if the node has it;
+* an SELinux label that the node hasn't got is removed (elsewhere restic leaves
+  it);
+* the target itself gets the subfolder's own metadata when restoring
+  ``<snapshot>:<subfolder>``.
+
+``--clone-from PATH=DIR`` (with ``--exact`` only) walks the same snapshot's tree at
+``PATH`` and takes every regular file there that ``DIR`` holds, restored and
+unchanged since; a file the restore would write whose contents (the list of its
+blobs) one of those has is cloned whole from it (``FICLONE``) and then given its own
+metadata. A clone that fails falls back to writing. Nothing at or below the target
+is cloned from, and no file onto itself. Only Linux clones; elsewhere every file is
+written.
+
+``--target-metadata`` gives the target the subfolder's own metadata, set last, even
+when it isn't empty. Without it (and without ``--exact``) the target gets it only
+when the restore creates it or finds it fresh, as a new file system's root.
+
 Dry runs
 --------
 
