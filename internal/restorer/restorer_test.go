@@ -1026,6 +1026,52 @@ func TestRestorerTargetNodeMetadata(t *testing.T) {
 	}
 }
 
+// --target-metadata gives a target with entries the subfolder's metadata;
+// without it the target keeps its own.
+func TestRestoreTargetMetadataNotFresh(t *testing.T) {
+	mtime := time.Date(2019, time.January, 9, 1, 46, 40, 0, time.UTC)
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"dir": Dir{
+				Mode:    normalizeFileMode(0o750 | os.ModeDir),
+				ModTime: mtime,
+				Nodes:   map[string]Node{"file": File{Data: "file\n"}},
+			},
+		},
+	}, noopGetGenericAttributes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subtree, dirNode, err := data.FindTreeDirectoryNode(ctx, repo, sn.Tree, "/dir")
+	rtest.OK(t, err)
+	sn.Tree = subtree
+
+	for _, test := range []struct {
+		name string
+		opts Options
+		gets bool
+	}{
+		{"plain", Options{}, false},
+		{"target-metadata", Options{TargetMetadata: true}, true},
+	} {
+		target := filepath.Join(rtest.TempDir(t), "target")
+		rtest.OK(t, os.Mkdir(target, 0o755))
+		// another file system's mount point would do too; an entry of its
+		// own makes it not fresh
+		rtest.OK(t, os.WriteFile(filepath.Join(target, "file"), []byte("old"), 0o644))
+		res := NewRestorer(repo, sn, test.opts)
+		res.TargetNode = dirNode
+		_, err := res.RestoreTo(ctx, target)
+		rtest.OK(t, err)
+		fi, err := os.Lstat(target)
+		rtest.OK(t, err)
+		rtest.Equals(t, test.gets, fi.ModTime().Equal(mtime), test.name+": mtime")
+		if runtime.GOOS != "windows" {
+			rtest.Equals(t, test.gets, fi.Mode().Perm() == 0o750, test.name+": mode")
+		}
+	}
+}
+
 // VerifyFiles must not report cancellation of its context through res.Error.
 func TestVerifyCancel(t *testing.T) {
 	snapshot := Snapshot{

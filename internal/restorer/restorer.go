@@ -69,7 +69,7 @@ type Restorer struct {
 	// otherwise keep mkfs's defaults and no SELinux label.  A target with
 	// files or other entries keeps its own owner,
 	// mode, timestamps, extended attributes and flags, as in stock restic
-	// (targetNode).
+	// (targetNode), but with Options.TargetMetadata.
 	TargetNode *data.Node
 }
 
@@ -82,6 +82,9 @@ type Options struct {
 	Overwrite       OverwriteBehavior
 	Delete          bool
 	OwnershipByName bool
+	// BackOtter: TargetMetadata gives the target TargetNode's metadata, set
+	// last, even when it isn't fresh (rustic-bko's --target-metadata).
+	TargetMetadata bool
 }
 
 type OverwriteBehavior int
@@ -875,7 +878,8 @@ func (res *Restorer) ensureParents() error {
 // or a shared one with the sticky bit or write permission for others, such
 // as an empty /tmp or /dev/shm) keeps its owner, mode, times, extended
 // attributes, ACLs and flags, as in stock restic, which never gives the
-// target metadata.  nil when dst keeps its own.
+// target metadata.  BackOtter: but with --target-metadata, which gives it
+// to any directory at dst, set last.  nil when dst keeps its own.
 func (res *Restorer) targetNode(dst string) *data.Node {
 	if res.TargetNode == nil {
 		return nil
@@ -886,6 +890,10 @@ func (res *Restorer) targetNode(dst string) *data.Node {
 	}
 	if err != nil || !fi.IsDir() {
 		return nil
+	}
+	// BackOtter: --target-metadata gives it to any directory.
+	if res.opts.TargetMetadata {
+		return res.TargetNode
 	}
 	if fresh, err := freshTarget(dst); err != nil || !fresh {
 		debug.Log("target %v keeps its metadata: not fresh (%v)", dst, err)

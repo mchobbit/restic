@@ -74,6 +74,7 @@ type RestoreOptions struct {
 	ExcludeXattrPattern []string
 	IncludeXattrPattern []string
 	OwnershipByName     bool
+	TargetMetadata      bool
 }
 
 func (opts *RestoreOptions) AddFlags(f *pflag.FlagSet) {
@@ -94,6 +95,10 @@ func (opts *RestoreOptions) AddFlags(f *pflag.FlagSet) {
 	if runtime.GOOS != "windows" {
 		f.BoolVar(&opts.OwnershipByName, "ownership-by-name", false, "restore file ownership by user name and group name (except POSIX ACLs)")
 	}
+	// BackOtter: bko-holt's main restore, whose target holds other
+	// subvolumes (not fresh) and whose root's metadata the backup holds only
+	// once its alias is left out.
+	f.BoolVar(&opts.TargetMetadata, "target-metadata", false, "the target gets the subfolder's own metadata, set last, even when it isn't empty")
 }
 
 func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
@@ -176,6 +181,7 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		Overwrite:       opts.Overwrite,
 		Delete:          opts.Delete,
 		OwnershipByName: opts.OwnershipByName,
+		TargetMetadata:  opts.TargetMetadata,
 	})
 	res.TargetNode = subfolderNode
 
