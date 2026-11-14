@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/restic/restic/internal/data"
@@ -75,6 +76,7 @@ type RestoreOptions struct {
 	IncludeXattrPattern []string
 	OwnershipByName     bool
 	Exact               bool
+	CloneFrom           string
 	TargetMetadata      bool
 }
 
@@ -99,6 +101,7 @@ func (opts *RestoreOptions) AddFlags(f *pflag.FlagSet) {
 	// BackOtter: for bko-holt's btrfs snapshots, each a snapshot of a tree
 	// restored before, as rustic-bko's (internal/restorer/exact.go).
 	f.BoolVar(&opts.Exact, "exact", false, "make the target exactly the snapshot, writing only what differs: implies --delete and --overwrite always (existing files verified blob by blob); a file with other names gets a name of its own first; an entry whose metadata already matches is left untouched")
+	f.StringVar(&opts.CloneFrom, "clone-from", "", "with --exact, `PATH=DIR`: files whose contents the snapshot's PATH has, restored at DIR (unchanged since), are cloned from there instead of written")
 	// BackOtter: bko-holt's main restore, whose target holds other
 	// subvolumes (not fresh) and whose root's metadata the backup holds only
 	// once its alias is left out.
@@ -151,6 +154,18 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		return errors.Fatal("--exact verifies every existing file: --overwrite must be always")
 	}
 
+	var cloneFrom, cloneDir string
+	if opts.CloneFrom != "" {
+		if !opts.Exact {
+			return errors.Fatal("--clone-from needs --exact")
+		}
+		var ok bool
+		cloneFrom, cloneDir, ok = strings.Cut(opts.CloneFrom, "=")
+		if !ok || cloneFrom == "" || cloneDir == "" {
+			return errors.Fatalf("--clone-from takes PATH=DIR, not %v", opts.CloneFrom)
+		}
+	}
+
 	if (opts.Delete || opts.Exact) && filepath.Clean(opts.Target) == "/" && !hasExcludes && !hasIncludes {
 		return errors.Fatal("'--target / --delete' must be combined with an include or exclude filter")
 	}
@@ -175,10 +190,30 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		return err
 	}
 
+	rootTree := sn.Tree
 	var subfolderNode *data.Node
 	sn.Tree, subfolderNode, err = data.FindTreeDirectoryNode(ctx, repo, sn.Tree, subfolder)
 	if err != nil {
 		return err
+	}
+
+	// BackOtter: --clone-from PATH=DIR, the same snapshot's PATH.  Nothing
+	// in the target is cloned from when DIR holds it (a snapper snapshot
+	// inside the subvolume, seeded from it): it holds the seed, not what
+	// the snapshot has there.
+	var cloneSources *restorer.CloneSources
+	if cloneFrom != "" {
+		fromTree, err := data.FindTreeDirectory(ctx, repo, rootTree, cloneFrom)
+		if err != nil {
+			return errors.Fatalf("--clone-from: %v", err)
+		}
+		cloneSources, err = restorer.NewCloneSources(ctx, repo, *fromTree, cloneDir, opts.Target)
+		if err != nil {
+			return errors.Fatalf("--clone-from: %v", err)
+		}
+		if !gopts.JSON {
+			printer.P("%d files' contents to clone from %s\n", cloneSources.Len(), cloneDir)
+		}
 	}
 
 	progress := restoreui.NewProgress(printer, ui.CalculateProgressInterval(!gopts.Quiet, gopts.JSON, term.CanUpdateStatus()))
@@ -193,6 +228,7 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 		TargetMetadata:  opts.TargetMetadata,
 	})
 	res.TargetNode = subfolderNode
+	res.CloneSources = cloneSources
 
 	totalErrors := 0
 	res.Error = func(location string, err error) error {
@@ -269,6 +305,10 @@ func runRestore(ctx context.Context, opts RestoreOptions, gopts global.Options,
 	}
 
 	progress.Finish()
+
+	if files, size := res.Cloned(); files > 0 && !gopts.JSON {
+		printer.P("cloned %d files, %s of file contents\n", files, ui.FormatBytes(size))
+	}
 
 	if totalErrors > 0 {
 		return errors.Fatalf("There were %d errors", totalErrors)

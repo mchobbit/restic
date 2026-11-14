@@ -12,8 +12,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// With root, on a loop btrfs, where files clone: a broken hard link is a
-// clone, and an exact restore over a matching tree moves no change time.
+// With root, on a loop btrfs, where files clone: --clone-from clones, a
+// broken hard link is a clone, and an exact restore over a matching tree
+// moves no change time.
 func TestRestoreExactBtrfs(t *testing.T) {
 	mnt := mountLoopFS(t, 512<<20, "mkfs.btrfs", "-q")
 	old := rtest.TestTempDir
@@ -28,6 +29,7 @@ func TestRestoreExactBtrfs(t *testing.T) {
 	rtest.OK(t, err)
 	rtest.Assert(t, cloned, "a hard link on btrfs not broken by a clone")
 
+	t.Run("CloneFrom", TestRestoreExactCloneFrom)
 	t.Run("OverAMatchingTree", TestRestoreExactOverAMatchingTree)
 	t.Run("HardLinks", TestRestoreExactHardLinks)
 	t.Run("Label", TestRestoreExactLabel)

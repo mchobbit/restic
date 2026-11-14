@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/restic/restic/internal/data"
+	"github.com/restic/restic/internal/fs"
 	"github.com/restic/restic/internal/repository"
 	"github.com/restic/restic/internal/restic"
 	rtest "github.com/restic/restic/internal/test"
@@ -102,6 +103,101 @@ func TestSameMetadataSeesEveryDifference(t *testing.T) {
 	rtest.Assert(t, !sameMetadata(d, e, true, all), "devices")
 }
 
+func TestCloneSourcesKeepTheFirst(t *testing.T) {
+	var c CloneSources
+	id := restic.IDs{restic.NewRandomID(), restic.NewRandomID()}
+	c.add(id, "a")
+	c.add(id, "b")
+	path, ok := c.Get(id)
+	rtest.Assert(t, ok && path == "a", "got %q %v", path, ok)
+	_, ok = c.Get(id[:1])
+	rtest.Assert(t, !ok, "a prefix of the contents found")
+	_, ok = c.Get(nil)
+	rtest.Assert(t, !ok, "no contents found")
+	rtest.Equals(t, 1, c.Len())
+
+	var none *CloneSources
+	_, ok = none.Get(id)
+	rtest.Assert(t, !ok, "found in nil")
+	rtest.Equals(t, 0, none.Len())
+}
+
+func TestPathBelow(t *testing.T) {
+	tmp := rtest.TempDir(t)
+	dir := filepath.Join(tmp, "at")
+	dest := filepath.Join(dir, ".snapshots", "1", "snapshot")
+	rtest.OK(t, os.MkdirAll(dest, 0o755))
+	rel := filepath.Join(".snapshots", "1", "snapshot")
+
+	for _, test := range []struct {
+		name, dir, path string
+		rel             string
+		below           bool
+	}{
+		{"below", dir, dest, rel, true},
+		{"itself", dir, dir, "", true},
+		{"through ..", dir, filepath.Join(dir, ".snapshots", "..", ".snapshots", "1", "snapshot"), rel, true},
+		{"beside", dir, filepath.Join(tmp, "atx"), "", false},
+		{"above", dir, tmp, "", false},
+		{"not there yet", dir, filepath.Join(dir, "new"), "new", true},
+	} {
+		got, below := pathBelow(test.dir, test.path)
+		rtest.Assert(t, got == test.rel && below == test.below, "%v: got %q %v", test.name, got, below)
+	}
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(tmp, "link")
+		rtest.OK(t, os.Symlink(dir, link))
+		got, below := pathBelow(link, dest)
+		rtest.Assert(t, got == rel && below, "through a symlink: got %q %v", got, below)
+	}
+}
+
+// contentOf is the content of a file of one blob with data.
+func contentOf(data string) restic.IDs {
+	return restic.IDs{restic.Hash([]byte(data))}
+}
+
+// NewCloneSources offers the files there, of their size, and none inside the
+// target.
+func TestNewCloneSources(t *testing.T) {
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"a": Dir{Nodes: map[string]Node{
+				"f1": File{Data: "first"},
+				"f2": File{Data: "second"},
+				"f3": File{Data: "third"},
+			}},
+			"b":    Dir{Nodes: map[string]Node{"f1": File{Data: "first"}}},
+			"dest": Dir{Nodes: map[string]Node{"f4": File{Data: "fourth"}}},
+			"e":    File{Data: ""},
+		},
+	}, noopGetGenericAttributes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dir := rtest.TempDir(t)
+	_, err := NewRestorer(repo, sn, Options{}).RestoreTo(ctx, dir)
+	rtest.OK(t, err)
+	// changed since: another size, and gone
+	rtest.OK(t, os.WriteFile(filepath.Join(dir, "a", "f2"), []byte("2"), 0o644))
+	rtest.OK(t, os.Remove(filepath.Join(dir, "a", "f3")))
+
+	c, err := NewCloneSources(ctx, repo, *sn.Tree, dir, filepath.Join(dir, "dest"))
+	rtest.OK(t, err)
+	path, ok := c.Get(contentOf("first"))
+	rtest.Assert(t, ok && path == filepath.Join(dir, "a", "f1"), "first: %q %v", path, ok)
+	for _, data := range []string{"second", "third", "fourth"} {
+		_, ok := c.Get(contentOf(data))
+		rtest.Assert(t, !ok, "%v offered", data)
+	}
+	rtest.Equals(t, 1, c.Len())
+
+	// the target is the directory itself: nothing
+	c, err = NewCloneSources(ctx, repo, *sn.Tree, dir, dir)
+	rtest.OK(t, err)
+	rtest.Equals(t, 0, c.Len())
+}
+
 // exactRestore restores sn over dst with --exact, and verifies the files.
 func exactRestore(t *testing.T, repo restic.Repository, sn *data.Snapshot, dst string) *Restorer {
 	t.Helper()
@@ -157,4 +253,80 @@ func TestRestoreExact(t *testing.T) {
 		rtest.OK(t, err)
 		rtest.Equals(t, os.FileMode(0o600), fi.Mode().Perm())
 	}
+}
+
+// --clone-from: a file whose contents the source has is cloned from there
+// where the file system clones, and written where it doesn't; either way it
+// comes back right.  Nothing inside the target is cloned from.
+func TestRestoreExactCloneFrom(t *testing.T) {
+	repo := repository.TestRepository(t)
+	sn, _ := saveSnapshot(t, repo, Snapshot{
+		Nodes: map[string]Node{
+			"live": Dir{Nodes: map[string]Node{
+				"pkg": File{Data: "package v2"},
+				"cfg": File{Data: "live config"},
+			}},
+			"snap": Dir{Nodes: map[string]Node{
+				"pkg": File{Data: "package v2"},
+				"cfg": File{Data: "old config!"},
+			}},
+		},
+	}, noopGetGenericAttributes)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	top := rtest.TempDir(t)
+	_, err := NewRestorer(repo, sn, Options{}).RestoreTo(ctx, top)
+	rtest.OK(t, err)
+
+	liveTree, err := data.FindTreeDirectory(ctx, repo, sn.Tree, "/live")
+	rtest.OK(t, err)
+	snapTree, snapNode, err := data.FindTreeDirectoryNode(ctx, repo, sn.Tree, "/snap")
+	rtest.OK(t, err)
+	live := filepath.Join(top, "live")
+	reflinks := fs.CloneFile(filepath.Join(live, "pkg"), filepath.Join(top, "probe"), int64(len("package v2"))) == nil
+	rtest.OK(t, os.RemoveAll(filepath.Join(top, "probe")))
+
+	// a new target, and one seeded with the live tree's other contents
+	for _, seeded := range []bool{false, true} {
+		dst := filepath.Join(rtest.TempDir(t), "snap")
+		if seeded {
+			rtest.OK(t, os.Mkdir(dst, 0o755))
+			rtest.OK(t, os.WriteFile(filepath.Join(dst, "cfg"), []byte("live config"), 0o644))
+		}
+		sources, err := NewCloneSources(ctx, repo, *liveTree, live, dst)
+		rtest.OK(t, err)
+		rtest.Equals(t, 2, sources.Len())
+		snapSn := *sn
+		snapSn.Tree = snapTree
+		res := NewRestorer(repo, &snapSn, Options{Exact: true})
+		res.TargetNode = snapNode
+		res.CloneSources = sources
+		n, err := res.RestoreTo(ctx, dst)
+		rtest.OK(t, err)
+		_, err = res.VerifyFiles(ctx, dst, n, nil)
+		rtest.OK(t, err)
+		for name, want := range map[string]string{"pkg": "package v2", "cfg": "old config!"} {
+			data, err := os.ReadFile(filepath.Join(dst, name))
+			rtest.OK(t, err)
+			rtest.Equals(t, want, string(data), name)
+		}
+		files, size := res.Cloned()
+		if reflinks {
+			rtest.Equals(t, uint64(1), files, "files cloned")
+			rtest.Equals(t, uint64(len("package v2")), size, "bytes cloned")
+		} else {
+			rtest.Equals(t, uint64(0), files, "files cloned without reflinks")
+		}
+	}
+
+	// the live tree restored over itself, cloning from itself: nothing is
+	// offered, and nothing is emptied
+	liveSn := *sn
+	liveSn.Tree = liveTree
+	sources, err := NewCloneSources(ctx, repo, *liveTree, live, live)
+	rtest.OK(t, err)
+	rtest.Equals(t, 0, sources.Len())
+	res := NewRestorer(repo, &liveSn, Options{Exact: true})
+	res.CloneSources = sources
+	exactRestoreWith(t, res, live)
 }

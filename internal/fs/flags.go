@@ -39,6 +39,14 @@ func PrepareFileForFlags(path string, flags uint32) error {
 	return prepareFileForFlags(path, flags&flagsBeforeData)
 }
 
+// HasFlagsBeforeData tells whether flags hold any that PrepareFileForFlags
+// sets on a file before its data (btrfs's no-copy-on-write): such a file's
+// contents can't come from a clone (restore --clone-from), which a
+// no-copy-on-write file refuses.
+func HasFlagsBeforeData(flags uint32) bool {
+	return flags&flagsBeforeData != 0
+}
+
 // HasDirFlagsBeforeEntries tells whether this OS has flags that a file system
 // only takes while a directory is empty, for PrepareDirForFlags to set.
 func HasDirFlagsBeforeEntries() bool {

@@ -71,6 +71,13 @@ type Restorer struct {
 	// mode, timestamps, extended attributes and flags, as in stock restic
 	// (targetNode), but with Options.Exact or Options.TargetMetadata.
 	TargetNode *data.Node
+
+	// CloneSources, with Options.Exact, are files restored elsewhere on the
+	// target's file system whose contents a file the restore would write
+	// may be cloned from instead (--clone-from).
+	CloneSources *CloneSources
+	clonedFiles  uint64
+	clonedBytes  uint64
 }
 
 var restorerAbortOnAllErrors = func(_ string, err error) error { return err }
@@ -1170,6 +1177,26 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) (uint64, error) 
 					res.metadataOnly(node, target, location, sparse)
 				} else {
 					res.opts.Progress.AddFile(node.Size)
+					// BackOtter: under --exact, a file restored elsewhere
+					// with the same contents (--clone-from) is cloned, not
+					// written; one whose clone failed after emptying it is
+					// written whole.
+					if !unread {
+						cloned, emptied := res.cloneFromSources(node, target, location)
+						if cloned {
+							action := restoreui.ActionFileUpdated
+							if matches == nil {
+								action = restoreui.ActionFileRestored
+							}
+							res.opts.Progress.AddProgress(location, action, node.Size, node.Size)
+							res.trackFile(location, false)
+							restoredFileCount++
+							return nil
+						}
+						if emptied {
+							matches = nil
+						}
+					}
 					if !res.opts.DryRun && unread {
 						// A file whose contents weren't backed up
 						// goes into a new, empty one: the one there
